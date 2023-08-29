@@ -1,2 +1,3 @@
+7a8d7611-1276-4a10-a545-5fb27dafe6b5 archive-id=061941e4-bdb6-4f5a-9f47-cc1b962d1ec6 autoenable=true encryption=none externaltype=ora name=ria-sequoia-storage type=external url=ria+file:///data/neuromod/ria-sequoia timestamp=1693336756.653186429s
 7a8d7611-1276-4a10-a545-5fb27dafe6b5 archive-id=061941e4-bdb6-4f5a-9f47-cc1b962d1ec6 autoenable=true encryption=none externaltype=ora name=ria-sequoia-storage type=external url=ria+file:///data/neuromod/ria-sequoia timestamp=1693336783.21420052s
 85f04754-64f4-4df6-a4b6-f209abcac3e9 archive-id=061941e4-bdb6-4f5a-9f47-cc1b962d1ec6 autoenable=true encryption=none externaltype=ora name=ria-beluga-storage type=external url=ria+ssh://beluga.computecanada.ca/lustre03/project/rrg-pbellec/ria-beluga timestamp=1685127986.549643264s
