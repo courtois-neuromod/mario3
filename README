@@ -1,13 +1,13 @@
 <!-- vim: syntax=Markdown -->
-# Courtois-NeuroMod: [xxxx subdataset](https://github.com/courtois-neuromod/xxxxx)
+# Courtois-NeuroMod: mario3 subdataset(https://github.com/courtois-neuromod/mario3)
 
 The [Courtois project on Neural Modelling (Courtois NeuroMod)](https://www.cneuromod.ca/) aims at training artificial neural networks using extensive experimental data on individual human brain activity and behaviour.
 
-Participants *performed task xxx while functional data being acquired in the MRI scanner* . A extensive description can be found [here](https://docs.cneuromod.ca/en/latest/DATASETS.html#xxxx).
+Participants played levels of Mario3 while functional data being acquired in the MRI scanner . A extensive description can be found [here](https://docs.cneuromod.ca/en/latest/DATASETS.html#mario3).
 
 This subdataset is organized following the [brain imaging data structure (BIDS)](https://bids.neuroimaging.io/) (including extensions in development) and contains:
 - [x] [raw neuroimaging data](https://docs.cneuromod.ca/en/latest/MRI.html#functional-sequences)
-- [ ] behavioral variables in event files
+- [x] behavioral variables in event files
 - [ ] physiological data
   - [ ] ECG
   - [ ] pulse (photoplethysmography)
