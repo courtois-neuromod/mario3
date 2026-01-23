@@ -4,12 +4,15 @@ Generate annotated event files for the Mario 3 dataset from replay variables.
 
 This script reads game variables from replay processing and generates detailed
 BIDS-compatible event files containing:
-  - Button press events (UP, DOWN, LEFT, RIGHT, A, B, START, SELECT) ✅ AVAILABLE
-  - Kill events (stomp, impact, kick, etc.) ❌ Requires enemy_kill variables
-  - Hit events (life lost ✅, powerup lost ❌ requires powerstate)
-  - Brick smashing events ❌ Requires jump_airborne and score tracking
-  - Coin collection events ❌ Requires coins variable
-  - Powerup collection events ❌ Requires player_state variable
+  - Button press events (UP, DOWN, LEFT, RIGHT, A, B, START, SELECT)
+  - Kill events (stomp) via stomp_counter
+  - Hit events (life lost, powerup lost, timeout) via lives and powerup
+  - Brick smashing events via score increments
+  - Coin collection events via coins variable
+  - Powerup collection events via powerup variable increases
+  - Star power events via invincibility_timer
+  - Flight events via flight_timer
+  - P-Switch events via p_switch_timer
 
 Usage:
     python generate_annotations.py
@@ -19,11 +22,6 @@ Usage:
 
 Note: Requires replay files (_variables.json) in gamelogs/ folders.
       Run create_replays.py first if they don't exist.
-
-IMPORTANT: Button inputs come from the replay file (.bk2) and are always available.
-Game state events (kills, coins, powerups, etc.) require RAM variables from data.json.
-The current data.json for Super Mario Bros 3 is incomplete, so only button presses
-and life loss events can be detected until data.json is updated with the missing variables.
 """
 
 import argparse
@@ -98,6 +96,27 @@ def create_runevents(runvars, run_id, events_dataframe, FS=60):
 
             # Powerups
             temp_df = generate_powerup_events(repvars, FS=FS)
+            if not temp_df.empty:
+                temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
+                temp_df["rep_index"] = rep_index
+                all_df.append(temp_df)
+
+            # Star power (SMB3-specific)
+            temp_df = generate_star_events(repvars, FS=FS)
+            if not temp_df.empty:
+                temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
+                temp_df["rep_index"] = rep_index
+                all_df.append(temp_df)
+
+            # Flight (SMB3-specific)
+            temp_df = generate_flight_events(repvars, FS=FS)
+            if not temp_df.empty:
+                temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
+                temp_df["rep_index"] = rep_index
+                all_df.append(temp_df)
+
+            # P-Switch (SMB3-specific)
+            temp_df = generate_pswitch_events(repvars, FS=FS)
             if not temp_df.empty:
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
                 temp_df["rep_index"] = rep_index
@@ -178,21 +197,12 @@ def generate_key_events(repvars, key, FS=60):
 def generate_kill_events(repvars, FS=60):
     """Create a BIDS compatible events dataframe containing kill events.
 
-    NOTE: This function requires enemy_kill variables from data.json which are
-    currently NOT available for Super Mario Bros 3. This function will return
-    an empty dataframe until data.json is updated.
-
-    TODO: Once data.json is updated, verify the enemy_kill variable names, values,
-    and number of slots for Super Mario Bros 3.
-
-    Expected kill types based on enemy_kill3X variable values:
-    - 4: stomp (jumping on enemy)
-    - 34: impact (shell or fireball)
-    - 132: kick (kicked shell)
+    Super Mario Bros 3 uses the stomp_counter variable to track enemy kills.
+    The stomp_counter increments when Mario stomps on enemies.
 
     Parameters
     ----------
-    repvars : list
+    repvars : dict
         A dict containing all the variables of a single repetition.
     FS : int
         The sampling rate of the .bk2 file
@@ -201,7 +211,7 @@ def generate_kill_events(repvars, FS=60):
     -------
     events_df :
         An events DataFrame in BIDS-compatible format containing the
-        kill events (empty if enemy_kill variables not available).
+        kill events.
     """
     onset = []
     duration = []
@@ -210,10 +220,8 @@ def generate_kill_events(repvars, FS=60):
     frame_start = []
     frame_stop = []
 
-    # Check if enemy_kill variables are available
-    enemy_vars_available = any(f"enemy_kill3{i}" in repvars for i in range(6))
-    if not enemy_vars_available:
-        # Return empty dataframe if no enemy variables available
+    # Check if stomp_counter is available
+    if "stomp_counter" not in repvars:
         return pd.DataFrame(
             data={
                 "onset": onset,
@@ -225,42 +233,20 @@ def generate_kill_events(repvars, FS=60):
             }
         )
 
-    # TODO: Verify these kill values for Super Mario Bros 3
-    killvals_dict = {4: "stomp", 34: "impact", 132: "kick"}
-
-    # Check if we have START variable to determine frame count
-    if "START" not in repvars:
-        return pd.DataFrame()
-
-    n_frames_total = len(repvars["START"])
-    # TODO: Verify the number of enemy slots (currently assumes 6 like original SMB)
-    for frame_idx in range(n_frames_total - 1):
-        for ii in range(6):
-            # TODO: Verify the enemy_kill variable naming convention
-            enemy_key = f"enemy_kill3{ii}"
-            if enemy_key not in repvars:
-                continue
-
-            curr_val = repvars[enemy_key][frame_idx]
-            next_val = repvars[enemy_key][frame_idx + 1]
-            if curr_val in [4, 34, 132] and curr_val != next_val:
-                killstring = f"Kill/{killvals_dict[curr_val]}"
-                # TODO: Verify slot 5 special handling for powerup enemies
-                if ii == 5:
-                    if "powerup_yes_no" in repvars and repvars["powerup_yes_no"] == 0:
-                        onset.append(frame_idx / FS)
-                        duration.append(0)
-                        trial_type.append(killstring)
-                        level.append(repvars["level"])
-                        frame_start.append(frame_idx)
-                        frame_stop.append(frame_idx)
-                else:
-                    onset.append(frame_idx / FS)
-                    duration.append(0)
-                    trial_type.append(killstring)
-                    level.append(repvars["level"])
-                    frame_start.append(frame_idx)
-                    frame_stop.append(frame_idx)
+    stomps = repvars["stomp_counter"]
+    
+    # Detect when stomp_counter increases
+    for frame_idx in range(1, len(stomps)):
+        if stomps[frame_idx] > stomps[frame_idx - 1]:
+            # Each increment is a stomp kill
+            num_kills = stomps[frame_idx] - stomps[frame_idx - 1]
+            for _ in range(num_kills):
+                onset.append(frame_idx / FS)
+                duration.append(0)
+                trial_type.append("Kill/stomp")
+                level.append(repvars["level"])
+                frame_start.append(frame_idx)
+                frame_stop.append(frame_idx)
 
     events_df = pd.DataFrame(
         data={
@@ -278,11 +264,10 @@ def generate_kill_events(repvars, FS=60):
 def generate_hits_taken_events(repvars, FS=60):
     """Generate events for when Mario takes damage or loses a life.
 
-    TODO: Verify the powerstate threshold and variable names for Super Mario Bros 3.
-
-    Two types of hits:
-    - Powerup lost: powerstate decreases by more than 10000
+    Super Mario Bros 3 hit detection:
+    - Powerup lost: powerup variable decreases (e.g., 3→1 means lost raccoon)
     - Life lost: lives counter decreases
+    - Timeout: timer reaches 000 (detected via timer_100/10/1)
 
     Parameters
     ----------
@@ -303,30 +288,55 @@ def generate_hits_taken_events(repvars, FS=60):
     frame_start = []
     frame_stop = []
 
-    # Powerup lost (only if powerstate available)
-    if "powerstate" in repvars:
-        # TODO: Verify the powerstate threshold (-10000) for Super Mario Bros 3
-        diff_state = list(np.diff(repvars["powerstate"]))
-        for idx_val, val in enumerate(diff_state):
-            if val < -10000:
-                onset.append(idx_val / FS)
+    # Track frames where we detected a life loss (to avoid double-counting)
+    life_loss_frames = set()
+
+    # Powerup lost (powerup value decreased)
+    if "powerup" in repvars:
+        powerups = repvars["powerup"]
+        for frame_idx in range(1, len(powerups)):
+            if powerups[frame_idx] < powerups[frame_idx - 1]:
+                onset.append(frame_idx / FS)
                 duration.append(0)
                 trial_type.append("Hit/powerup_lost")
                 level.append(repvars["level"])
-                frame_start.append(idx_val)
-                frame_stop.append(idx_val)
+                frame_start.append(frame_idx)
+                frame_stop.append(frame_idx)
 
-    # Lives lost (this should be available from current data.json)
+    # Life lost
     if "lives" in repvars:
         diff_lives = list(np.diff(repvars["lives"]))
         for idx_val, val in enumerate(diff_lives):
             if val < 0:
-                onset.append(idx_val / FS)
-                duration.append(0)
-                trial_type.append("Hit/life_lost")
-                level.append(repvars["level"])
-                frame_start.append(idx_val)
-                frame_stop.append(idx_val)
+                frame_idx = idx_val + 1  # diff shifts by 1
+                
+                # Check if this is a timeout death
+                is_timeout = False
+                if "timer_100" in repvars and "timer_10" in repvars and "timer_1" in repvars:
+                    # Look at timer a few frames before death
+                    check_frame = max(0, frame_idx - 5)
+                    timer_h = repvars["timer_100"][check_frame]
+                    timer_t = repvars["timer_10"][check_frame]
+                    timer_o = repvars["timer_1"][check_frame]
+                    if timer_h == 0 and timer_t == 0 and timer_o <= 1:
+                        is_timeout = True
+                
+                if is_timeout:
+                    onset.append(frame_idx / FS)
+                    duration.append(0)
+                    trial_type.append("Hit/timeout")
+                    level.append(repvars["level"])
+                    frame_start.append(frame_idx)
+                    frame_stop.append(frame_idx)
+                else:
+                    onset.append(frame_idx / FS)
+                    duration.append(0)
+                    trial_type.append("Hit/life_lost")
+                    level.append(repvars["level"])
+                    frame_start.append(frame_idx)
+                    frame_stop.append(frame_idx)
+                
+                life_loss_frames.add(frame_idx)
 
     events_df = pd.DataFrame(
         data={
@@ -344,10 +354,8 @@ def generate_hits_taken_events(repvars, FS=60):
 def generate_bricks_smashed_events(repvars, FS=60):
     """Generate events for when Mario smashes bricks.
 
-    TODO: Verify the score increment value for brick destruction in Super Mario Bros 3.
-    Different score values may be used compared to the original game.
-
-    Detected by score increasing by 5 points while airborne (jump_airborne == 1).
+    In Super Mario Bros 3, brick breaking gives 10 points.
+    We detect score increments of 10 while in_air flag is set.
 
     Parameters
     ----------
@@ -370,7 +378,7 @@ def generate_bricks_smashed_events(repvars, FS=60):
     frame_stop = []
 
     # Check if required variables are available
-    if "score" not in repvars or "jump_airborne" not in repvars:
+    if "score" not in repvars:
         return pd.DataFrame(
             data={
                 "onset": onset,
@@ -383,10 +391,21 @@ def generate_bricks_smashed_events(repvars, FS=60):
         )
 
     score_increments = list(np.diff(repvars["score"]))
-    # TODO: Verify the score increment value (currently 5) for brick smashing
+    
+    # In SMB3, brick breaking gives 10 points
     for idx_val, inc in enumerate(score_increments):
-        if inc == 5:
-            if repvars["jump_airborne"][idx_val] == 1:
+        if inc == 10:
+            # Check if in_air flag is set (if available)
+            if "in_air" in repvars:
+                if repvars["in_air"][idx_val] != 0:
+                    onset.append(idx_val / FS)
+                    duration.append(0)
+                    trial_type.append("Brick_smashed")
+                    level.append(repvars["level"])
+                    frame_start.append(idx_val)
+                    frame_stop.append(idx_val)
+            else:
+                # If in_air not available, still record the event
                 onset.append(idx_val / FS)
                 duration.append(0)
                 trial_type.append("Brick_smashed")
@@ -470,11 +489,9 @@ def generate_coin_events(repvars, FS=60):
 def generate_powerup_events(repvars, FS=60):
     """Generate events for powerup collection.
 
-    TODO: Verify the player_state values for Super Mario Bros 3. These values
-    may differ from the original Super Mario Bros.
-
-    Detected by player_state being in [9, 12, 13] which indicates
-    the animation of collecting a powerup.
+    Super Mario Bros 3 powerup detection:
+    - Powerup gained when 'powerup' variable increases
+    - Types: 0=small, 1=big, 2=fire, 3=raccoon, 4=frog, 5=tanooki, 6=hammer
 
     Parameters
     ----------
@@ -495,8 +512,8 @@ def generate_powerup_events(repvars, FS=60):
     frame_start = []
     frame_stop = []
 
-    # Check if player_state variable is available
-    if "player_state" not in repvars:
+    # Check if powerup variable is available
+    if "powerup" not in repvars:
         return pd.DataFrame(
             data={
                 "onset": onset,
@@ -508,17 +525,206 @@ def generate_powerup_events(repvars, FS=60):
             }
         )
 
-    # powerup collect events
-    # TODO: Verify these player_state values for powerup collection
-    for idx, val in enumerate(repvars["player_state"][:-1]):
-        if val in [9, 12, 13]:
-            if repvars["player_state"][idx + 1] != val:
-                onset.append(idx / FS)
-                duration.append(0)
-                trial_type.append("Powerup_collected")
-                level.append(repvars["level"])
-                frame_start.append(idx)
-                frame_stop.append(idx)
+    powerup_names = {
+        0: "small", 1: "mushroom", 2: "fire_flower", 3: "leaf",
+        4: "frog_suit", 5: "tanooki_suit", 6: "hammer_suit"
+    }
+
+    powerups = repvars["powerup"]
+    
+    for idx in range(1, len(powerups)):
+        prev_val = powerups[idx - 1]
+        curr_val = powerups[idx]
+        
+        if curr_val > prev_val:
+            # Determine powerup type based on new value
+            powerup_type = powerup_names.get(curr_val, f"unknown_{curr_val}")
+            onset.append(idx / FS)
+            duration.append(0)
+            trial_type.append(f"Powerup/{powerup_type}")
+            level.append(repvars["level"])
+            frame_start.append(idx)
+            frame_stop.append(idx)
+
+    events_df = pd.DataFrame(
+        data={
+            "onset": onset,
+            "duration": duration,
+            "trial_type": trial_type,
+            "level": level,
+            "frame_start": frame_start,
+            "frame_stop": frame_stop,
+        }
+    )
+    return events_df
+
+
+def generate_star_events(repvars, FS=60):
+    """Generate events for star power activation.
+
+    Detected by invincibility_timer going from 0 to >0.
+
+    Parameters
+    ----------
+    repvars : dict
+        Dictionary containing all the variables of a single repetition
+    FS : int
+        The sampling rate of the .bk2 file
+
+    Returns
+    -------
+    events_df : pandas.DataFrame
+        Events DataFrame in BIDS-compatible format
+    """
+    onset = []
+    duration = []
+    trial_type = []
+    level = []
+    frame_start = []
+    frame_stop = []
+
+    if "invincibility_timer" not in repvars:
+        return pd.DataFrame(
+            data={
+                "onset": onset,
+                "duration": duration,
+                "trial_type": trial_type,
+                "level": level,
+                "frame_start": frame_start,
+                "frame_stop": frame_stop,
+            }
+        )
+
+    timer = repvars["invincibility_timer"]
+    
+    for idx in range(1, len(timer)):
+        if timer[idx - 1] == 0 and timer[idx] > 0:
+            onset.append(idx / FS)
+            duration.append(0)
+            trial_type.append("Powerup/star")
+            level.append(repvars["level"])
+            frame_start.append(idx)
+            frame_stop.append(idx)
+
+    events_df = pd.DataFrame(
+        data={
+            "onset": onset,
+            "duration": duration,
+            "trial_type": trial_type,
+            "level": level,
+            "frame_start": frame_start,
+            "frame_stop": frame_stop,
+        }
+    )
+    return events_df
+
+
+def generate_flight_events(repvars, FS=60):
+    """Generate events for flight activation (Raccoon/Tanooki Mario).
+
+    Detected by flight_timer going from 0 to >0.
+
+    Parameters
+    ----------
+    repvars : dict
+        Dictionary containing all the variables of a single repetition
+    FS : int
+        The sampling rate of the .bk2 file
+
+    Returns
+    -------
+    events_df : pandas.DataFrame
+        Events DataFrame in BIDS-compatible format
+    """
+    onset = []
+    duration = []
+    trial_type = []
+    level = []
+    frame_start = []
+    frame_stop = []
+
+    if "flight_timer" not in repvars:
+        return pd.DataFrame(
+            data={
+                "onset": onset,
+                "duration": duration,
+                "trial_type": trial_type,
+                "level": level,
+                "frame_start": frame_start,
+                "frame_stop": frame_stop,
+            }
+        )
+
+    timer = repvars["flight_timer"]
+    
+    for idx in range(1, len(timer)):
+        if timer[idx - 1] == 0 and timer[idx] > 0:
+            onset.append(idx / FS)
+            duration.append(0)
+            trial_type.append("Flight_started")
+            level.append(repvars["level"])
+            frame_start.append(idx)
+            frame_stop.append(idx)
+
+    events_df = pd.DataFrame(
+        data={
+            "onset": onset,
+            "duration": duration,
+            "trial_type": trial_type,
+            "level": level,
+            "frame_start": frame_start,
+            "frame_stop": frame_stop,
+        }
+    )
+    return events_df
+
+
+def generate_pswitch_events(repvars, FS=60):
+    """Generate events for P-Switch activation.
+
+    Detected by p_switch_timer going from 0 to >0.
+
+    Parameters
+    ----------
+    repvars : dict
+        Dictionary containing all the variables of a single repetition
+    FS : int
+        The sampling rate of the .bk2 file
+
+    Returns
+    -------
+    events_df : pandas.DataFrame
+        Events DataFrame in BIDS-compatible format
+    """
+    onset = []
+    duration = []
+    trial_type = []
+    level = []
+    frame_start = []
+    frame_stop = []
+
+    if "p_switch_timer" not in repvars:
+        return pd.DataFrame(
+            data={
+                "onset": onset,
+                "duration": duration,
+                "trial_type": trial_type,
+                "level": level,
+                "frame_start": frame_start,
+                "frame_stop": frame_stop,
+            }
+        )
+
+    timer = repvars["p_switch_timer"]
+    
+    for idx in range(1, len(timer)):
+        if timer[idx - 1] == 0 and timer[idx] > 0:
+            onset.append(idx / FS)
+            duration.append(0)
+            trial_type.append("P-Switch_activated")
+            level.append(repvars["level"])
+            frame_start.append(idx)
+            frame_stop.append(idx)
 
     events_df = pd.DataFrame(
         data={
