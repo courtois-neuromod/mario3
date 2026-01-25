@@ -56,147 +56,154 @@ def _calculate_world_and_level(level_str):
 
 
 def _calculate_distance_traveled(repetition_variables):
-    """Calculate total X distance traveled using player level position."""
+    """
+    Calculate maximum X distance traveled using player level position.
+    
+    Combines player_x_level_high (high byte) and player_x_level_low (low byte) for full position.
+    Returns the furthest point reached minus the starting position.
+    """
     try:
-        # Mario 3 uses player_x_level for position
-        if "player_x_level" in repetition_variables:
-            start_x = repetition_variables["player_x_level"][0]
-            end_x = repetition_variables["player_x_level"][-1]
-            
-            # Also account for level page changes if available
-            if "level_page" in repetition_variables:
-                start_page = repetition_variables["level_page"][0]
-                end_page = repetition_variables["level_page"][-1]
-                # Each page is 256 pixels wide
-                return (end_page - start_page) * 256 + (end_x - start_x)
-            return end_x - start_x
+        player_x = repetition_variables["player_x_level_low"]
+        # Use player_x_level_high as the high byte (page number)
+        # Note: address 117 (0x75) tracks horizontal position in 256-pixel increments
+        level_page = repetition_variables["player_x_level_high"]
+        
+        # Calculate full X position for each frame: page * 256 + x
+        full_x_positions = [
+            level_page[i] * 256 + player_x[i] 
+            for i in range(len(player_x))
+        ]
+        
+        start_x = full_x_positions[0]
+        max_x = max(full_x_positions)
+        
+        # Return maximum distance traveled from start
+        return max_x - start_x
+        
     except (KeyError, IndexError):
-        pass
-    return None
+        return None
 
 
 def _determine_outcome(repetition_variables):
     """
-    Determine how the replay ended: 'cleared', 'death', 'timeout', or 'unknown'.
+    Determine how the replay ended: 'cleared' or 'failed/*'.
     
-    Uses multiple signals:
-    - complete_level: 1 = level ended successfully
-    - killed: 1 = level being beaten, 0 = died
-    - lives decrease = death
-    - timer at 000 = timeout
+    Outcomes:
+    - cleared: Level completed successfully (complete_level hits 1 AND killed is 0 at that frame)
+    - failed/fall: Last 100 frames of player_x_level_low are all 0
+    - failed/timeout: Timer reaches 0
+    - failed/killed: Killed by enemy (default failure if not fall/timeout)
     """
     try:
-        # Check if lives decreased (death occurred)
-        lives_start = repetition_variables["lives"][0]
-        lives_end = repetition_variables["lives"][-1]
+        # Check if level was ever completed
+        complete_indices = [i for i, x in enumerate(repetition_variables["complete_level"]) if x == 1]
         
-        if lives_end < lives_start:
-            # Check if it was a timeout - timer at 000
-            if "timer_100" in repetition_variables:
-                timer_h = repetition_variables["timer_100"][-1]
-                timer_t = repetition_variables["timer_10"][-1] if "timer_10" in repetition_variables else 0
-                timer_o = repetition_variables["timer_1"][-1] if "timer_1" in repetition_variables else 0
-                if timer_h == 0 and timer_t == 0 and timer_o == 0:
-                    return "timeout"
-            return "death"
+        if complete_indices:
+            idx = complete_indices[0]
+            
+            # Check Timer at the frame of completion
+            t_h = repetition_variables["timer_100"][idx]
+            t_t = repetition_variables["timer_10"][idx]
+            t_o = repetition_variables["timer_1"][idx]
+            timer_at_completion = t_h * 100 + t_t * 10 + t_o
+            
+            if timer_at_completion == 0:
+                return "failed/timeout"
+                
+            # Check Killed at the frame of completion
+            is_killed = (repetition_variables["killed"][idx] == 1)
+            
+            if is_killed:
+                # Determine if Fall or Killed
+                x_low = repetition_variables["player_x_level_low"]
+                # Check last 100 frames of the replay for fall signature
+                last_segment = x_low[-100:] if len(x_low) > 0 else []
+                if last_segment and all(v == 0 for v in last_segment):
+                    return "failed/fall"
+                return "failed/killed"
+                
+            return "cleared"
         
-        # Check complete_level flag
-        if "complete_level" in repetition_variables:
-            if repetition_variables["complete_level"][-1] == 1:
-                return "cleared"
+        # If no completion detected, fall back to end-of-replay checks
         
-        # Check killed flag (1 = level being beaten successfully)
-        if "killed" in repetition_variables:
-            if repetition_variables["killed"][-1] == 1:
-                return "cleared"
+        # Check for Timeout (at end)
+        timer_h = repetition_variables["timer_100"][-1]
+        timer_t = repetition_variables["timer_10"][-1]
+        timer_o = repetition_variables["timer_1"][-1]
+        timer = timer_h * 100 + timer_t * 10 + timer_o
+            
+        if timer == 0:
+            return "failed/timeout"
+            
+        # Check for Fall vs Killed
+        x_low = repetition_variables["player_x_level_low"]
+        last_segment = x_low[-100:] if len(x_low) > 0 else []
         
-        # If lives didn't decrease and no death indicators, assume cleared
-        return "cleared"
+        if last_segment and all(v == 0 for v in last_segment):
+            return "failed/fall"
+
+        return "failed/killed"
         
     except (KeyError, IndexError):
         return "unknown"
 
 
-def _check_level_cleared(repetition_variables):
-    """Determine if level was successfully cleared."""
-    outcome = _determine_outcome(repetition_variables)
-    if outcome == "unknown":
-        return None
-    return outcome == "cleared"
-
-
-def count_kills(repetition_variables):
+def count_stomps(repetition_variables):
     """
-    Count total enemies killed using stomp_counter.
-    The stomp_counter tracks consecutive stomps during gameplay.
+    Count total enemies stomped using stomp_counter.
+    Counts the number of times stomp_counter goes from 0 to 1.
     """
     try:
-        if "stomp_counter" not in repetition_variables:
-            return None
-        
         stomps = repetition_variables["stomp_counter"]
-        kill_count = 0
+        stomp_count = 0
         
-        # Count transitions where stomp_counter increases
+        # Count transitions from 0 to 1
         for idx in range(1, len(stomps)):
-            if stomps[idx] > stomps[idx - 1]:
-                kill_count += stomps[idx] - stomps[idx - 1]
-        
-        return kill_count
+            if stomps[idx] == 1 and stomps[idx - 1] == 0:
+                stomp_count += 1
+                
+        return stomp_count
     except (KeyError, IndexError):
         return None
 
 
-def count_bricks_destroyed(repetition_variables):
+def count_bricks_smashed(repetition_variables):
     """
-    Count bricks destroyed. In Mario 3, need to look at score increments.
-    Brick breaking typically gives 10 points in SMB3.
+    Count bricks smashed.
+    Counts the number of times score increments by 1.
     """
     try:
         if "score" not in repetition_variables:
             return None
         
         score_increments = list(np.diff(repetition_variables["score"]))
-        # In SMB3, brick breaking gives 10 points
-        return sum(1 for inc in score_increments if inc == 10)
+        # Count score increments of 1
+        return sum(1 for inc in score_increments if inc == 1)
     except (KeyError, IndexError):
         return None
 
 
-def _count_powerup_lost_hits(repetition_variables):
-    """Count hits where Mario lost a powerup (powerup value decreased)."""
+def count_hits_taken(repetition_variables, outcome):
+    """
+    Count total hits taken. 
+    Counts ANY decrement in powerup value.
+    Adds 1 if the outcome is 'failed/killed'.
+    """
     try:
-        if "powerup" not in repetition_variables:
-            return None
-        
         powerups = repetition_variables["powerup"]
         hit_count = 0
         
+        # Count transitions where value decreases (e.g., 3->1, 1->0)
         for idx in range(1, len(powerups)):
             if powerups[idx] < powerups[idx - 1]:
                 hit_count += 1
-        
+                
+        if outcome == "failed/killed":
+            hit_count += 1
+            
         return hit_count
     except (KeyError, IndexError):
         return None
-
-
-def _count_life_losses(repetition_variables):
-    """Count hits from life losses."""
-    try:
-        diff_lives = list(np.diff(repetition_variables["lives"]))
-        return sum(1 for val in diff_lives if val < 0)
-    except KeyError:
-        return None
-
-
-def count_hits_taken(repetition_variables):
-    """Count total hits taken (powerup losses + deaths)."""
-    powerup_hits = _count_powerup_lost_hits(repetition_variables)
-    life_losses = _count_life_losses(repetition_variables)
-    if powerup_hits is None and life_losses is None:
-        return None
-    return (powerup_hits or 0) + (life_losses or 0)
 
 
 def count_powerups_collected(repetition_variables):
@@ -373,12 +380,8 @@ def create_sidecar_dict(repetition_variables):
     score_gained = _safe_diff(repetition_variables, "score")
     score = score_gained * 10 if score_gained is not None else None
 
-    # Calculate lives lost
-    lives_start = _safe_get_first(repetition_variables, "lives")
-    lives_final = _safe_get_last(repetition_variables, "lives")
-    lives_lost = None
-    if lives_start is not None and lives_final is not None:
-        lives_lost = lives_start - lives_final
+
+
 
     # Build comprehensive result dict
     result = {
@@ -399,17 +402,17 @@ def create_sidecar_dict(repetition_variables):
         "Max_p_meter": _get_max_p_meter(repetition_variables),
         
         # === Lives ===
-        "Lives_lost": lives_lost,
+
         
         # === Combat ===
-        "Hits_taken": count_hits_taken(repetition_variables),
-        "Enemies_killed": count_kills(repetition_variables),
+        "Hits_taken": count_hits_taken(repetition_variables, outcome),
+        "Enemies_stomped": count_stomps(repetition_variables),
         
         # === Items ===
         "Coins": _safe_diff(repetition_variables, "coins"),
         "Powerups_collected": count_powerups_collected(repetition_variables),
         "Stars_collected": count_star_power_activations(repetition_variables),
-        "Bricks_destroyed": count_bricks_destroyed(repetition_variables),
+        "Bricks_smashed": count_bricks_smashed(repetition_variables),
         
         # === Player State ===
         "Player_form_final": _get_final_powerup_state(repetition_variables),
@@ -670,10 +673,48 @@ def _configure_logging(verbose):
     logging.basicConfig(level=level, format="%(message)s", force=True)
 
 
-def _determine_phase(events_dataframe):
-    """Determine if replay is discovery or practice phase."""
-    unique_levels = len(np.unique(events_dataframe["level"].dropna()))
-    return "discovery" if unique_levels == 1 else "practice"
+def _assign_phases_per_subject(bk2_df):
+    """
+    Assign discovery/practice phase to each replay based on level progression.
+    
+    Discovery phase: Levels are played in sequential order (first playthrough).
+    Practice phase: Levels are played in random order (revisiting levels).
+    
+    The transition from discovery to practice occurs when we encounter a level
+    that we've already visited AND it's not an immediate retry of the same level.
+    
+    Args:
+        bk2_df: DataFrame sorted by subject and global_idx, with 'level' column
+        
+    Returns:
+        DataFrame with 'phase' column added
+    """
+    phases = []
+    
+    for subject in bk2_df["subject"].unique():
+        subject_df = bk2_df[bk2_df["subject"] == subject].sort_values("global_idx")
+        
+        visited_levels = set()
+        previous_level = None
+        current_phase = "discovery"
+        
+        for _, row in subject_df.iterrows():
+            level = row["level"]
+            
+            if current_phase == "discovery":
+                # Discovery continues if:
+                # 1. This is a new level we haven't seen before, OR
+                # 2. This is the same level as previous (immediate retry)
+                if level in visited_levels and level != previous_level:
+                    # We're revisiting an old level non-sequentially -> switch to practice
+                    current_phase = "practice"
+            
+            phases.append(current_phase)
+            visited_levels.add(level)
+            previous_level = level
+    
+    bk2_df["phase"] = phases
+    return bk2_df
 
 
 def _extract_run_from_filename(filename):
@@ -692,7 +733,6 @@ def _collect_bk2_info_from_events(run_events_file):
         logging.error(f"Cannot read {run_events_file}: {e}")
         return []
 
-    phase = _determine_phase(events_df)
     bk2_files = events_df["stim_file"].values.tolist()
 
     bk2_list = []
@@ -703,7 +743,6 @@ def _collect_bk2_info_from_events(run_events_file):
                     "bk2_file": bk2_file,
                     "run": run,
                     "idx_in_run": idx_in_run,
-                    "phase": phase,
                 }
             )
     return bk2_list
@@ -795,6 +834,10 @@ def main(args):
 
     bk2_df = pd.DataFrame(bk2_list)
     bk2_df = get_passage_order(bk2_df)
+    bk2_df = _assign_phases_per_subject(bk2_df)
+    
+    # Reorder columns to match process_bk2_file expected order
+    bk2_df = bk2_df[["bk2_file", "run", "idx_in_run", "phase", "subject", "session", "level", "global_idx", "level_idx"]]
 
     tasks = [tuple(row) for row in bk2_df.values]
     logging.info(f"Found {len(tasks)} bk2 files to process.")

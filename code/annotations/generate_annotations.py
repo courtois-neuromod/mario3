@@ -6,8 +6,8 @@ This script reads game variables from replay processing and generates detailed
 BIDS-compatible event files containing:
   - Button press events (UP, DOWN, LEFT, RIGHT, A, B, START, SELECT)
   - Kill events (stomp) via stomp_counter
-  - Hit events (life lost, powerup lost, timeout) via lives and powerup
-  - Brick smashing events via score increments
+  - Hit events (powerup lost, killed) via powerup/outcome
+  - Brick smashing events via score increments (1 point)
   - Coin collection events via coins variable
   - Powerup collection events via powerup variable increases
   - Star power events via invincibility_timer
@@ -31,6 +31,75 @@ import stable_retro
 import pandas as pd
 import numpy as np
 import json
+
+
+
+def _determine_outcome(repetition_variables):
+    """
+    Determine how the replay ended: 'cleared' or 'failed/*'.
+    
+    Outcomes:
+    - cleared: Level completed successfully (complete_level hits 1 AND killed is 0 at that frame)
+    - failed/fall: Last 100 frames of player_x_level_low are all 0
+    - failed/timeout: Timer reaches 0
+    - failed/killed: Killed by enemy (default failure if not fall/timeout)
+    """
+    try:
+        # Check if level was ever completed
+        if "complete_level" in repetition_variables:
+            complete_indices = [i for i, x in enumerate(repetition_variables["complete_level"]) if x == 1]
+            
+            if complete_indices:
+                idx = complete_indices[0]
+                
+                # Check Timer at the frame of completion
+                t_h = repetition_variables["timer_100"][idx]
+                t_t = repetition_variables["timer_10"][idx]
+                t_o = repetition_variables["timer_1"][idx]
+                timer_at_completion = t_h * 100 + t_t * 10 + t_o
+                
+                if timer_at_completion == 0:
+                    return "failed/timeout"
+                    
+                # Check Killed at the frame of completion
+                if "killed" in repetition_variables:
+                    is_killed = (repetition_variables["killed"][idx] == 1)
+                    
+                    if is_killed:
+                        # Determine if Fall or Killed
+                        if "player_x_level_low" in repetition_variables:
+                            x_low = repetition_variables["player_x_level_low"]
+                            last_segment = x_low[-100:] if len(x_low) > 0 else []
+                            if last_segment and all(v == 0 for v in last_segment):
+                                return "failed/fall"
+                        return "failed/killed"
+                
+                return "cleared"
+        
+        # If no completion detected, fall back to end-of-replay checks
+        
+        # Check for Timeout (at end)
+        if "timer_100" in repetition_variables:
+            timer_h = repetition_variables["timer_100"][-1]
+            timer_t = repetition_variables["timer_10"][-1]
+            timer_o = repetition_variables["timer_1"][-1]
+            timer = timer_h * 100 + timer_t * 10 + timer_o
+                
+            if timer == 0:
+                return "failed/timeout"
+            
+        # Check for Fall vs Killed
+        if "player_x_level_low" in repetition_variables:
+            x_low = repetition_variables["player_x_level_low"]
+            last_segment = x_low[-100:] if len(x_low) > 0 else []
+            
+            if last_segment and all(v == 0 for v in last_segment):
+                return "failed/fall"
+
+        return "failed/killed"
+        
+    except (KeyError, IndexError):
+        return "unknown"
 
 
 def create_runevents(runvars, run_id, events_dataframe, FS=60):
@@ -180,7 +249,15 @@ def generate_key_events(repvars, key, FS=60):
     onset = presses
     level = [repvars["level"] for x in onset]
     duration = [round(releases[i] - presses[i], 3) for i in range(len(presses))]
-    trial_type = ["{}".format(key) for i in range(len(presses))]
+    duration = [round(releases[i] - presses[i], 3) for i in range(len(presses))]
+    
+    event_name = key
+    if key == "A":
+        event_name = "JUMP"
+    elif key == "B":
+        event_name = "RUN/THROW"
+        
+    trial_type = ["{}".format(event_name) for i in range(len(presses))]
     events_df = pd.DataFrame(
         data={
             "onset": onset,
@@ -198,7 +275,7 @@ def generate_kill_events(repvars, FS=60):
     """Create a BIDS compatible events dataframe containing kill events.
 
     Super Mario Bros 3 uses the stomp_counter variable to track enemy kills.
-    The stomp_counter increments when Mario stomps on enemies.
+    We detect kills when stomp_counter transitions from 0 to 1.
 
     Parameters
     ----------
@@ -236,17 +313,15 @@ def generate_kill_events(repvars, FS=60):
     stomps = repvars["stomp_counter"]
     
     # Detect when stomp_counter increases
+    # Detect when stomp_counter increases from 0 to 1
     for frame_idx in range(1, len(stomps)):
-        if stomps[frame_idx] > stomps[frame_idx - 1]:
-            # Each increment is a stomp kill
-            num_kills = stomps[frame_idx] - stomps[frame_idx - 1]
-            for _ in range(num_kills):
-                onset.append(frame_idx / FS)
-                duration.append(0)
-                trial_type.append("Kill/stomp")
-                level.append(repvars["level"])
-                frame_start.append(frame_idx)
-                frame_stop.append(frame_idx)
+        if stomps[frame_idx] == 1 and stomps[frame_idx - 1] == 0:
+            onset.append(frame_idx / FS)
+            duration.append(0)
+            trial_type.append("Kill/stomp")
+            level.append(repvars["level"])
+            frame_start.append(frame_idx)
+            frame_stop.append(frame_idx)
 
     events_df = pd.DataFrame(
         data={
@@ -265,9 +340,8 @@ def generate_hits_taken_events(repvars, FS=60):
     """Generate events for when Mario takes damage or loses a life.
 
     Super Mario Bros 3 hit detection:
-    - Powerup lost: powerup variable decreases (e.g., 3→1 means lost raccoon)
-    - Life lost: lives counter decreases
-    - Timeout: timer reaches 000 (detected via timer_100/10/1)
+    - Powerup lost: powerup variable 1->0
+    - Killed: outcome is failed/killed
 
     Parameters
     ----------
@@ -291,10 +365,12 @@ def generate_hits_taken_events(repvars, FS=60):
     # Track frames where we detected a life loss (to avoid double-counting)
     life_loss_frames = set()
 
-    # Powerup lost (powerup value decreased)
+
+    # Powerup lost (powerup 1 -> 0)
     if "powerup" in repvars:
         powerups = repvars["powerup"]
         for frame_idx in range(1, len(powerups)):
+            # Count any decrement in powerup value (e.g. 3->1, 1->0)
             if powerups[frame_idx] < powerups[frame_idx - 1]:
                 onset.append(frame_idx / FS)
                 duration.append(0)
@@ -303,40 +379,31 @@ def generate_hits_taken_events(repvars, FS=60):
                 frame_start.append(frame_idx)
                 frame_stop.append(frame_idx)
 
-    # Life lost
-    if "lives" in repvars:
-        diff_lives = list(np.diff(repvars["lives"]))
-        for idx_val, val in enumerate(diff_lives):
-            if val < 0:
-                frame_idx = idx_val + 1  # diff shifts by 1
-                
-                # Check if this is a timeout death
-                is_timeout = False
-                if "timer_100" in repvars and "timer_10" in repvars and "timer_1" in repvars:
-                    # Look at timer a few frames before death
-                    check_frame = max(0, frame_idx - 5)
-                    timer_h = repvars["timer_100"][check_frame]
-                    timer_t = repvars["timer_10"][check_frame]
-                    timer_o = repvars["timer_1"][check_frame]
-                    if timer_h == 0 and timer_t == 0 and timer_o <= 1:
-                        is_timeout = True
-                
-                if is_timeout:
-                    onset.append(frame_idx / FS)
-                    duration.append(0)
-                    trial_type.append("Hit/timeout")
-                    level.append(repvars["level"])
-                    frame_start.append(frame_idx)
-                    frame_stop.append(frame_idx)
-                else:
-                    onset.append(frame_idx / FS)
-                    duration.append(0)
-                    trial_type.append("Hit/life_lost")
-                    level.append(repvars["level"])
-                    frame_start.append(frame_idx)
-                    frame_stop.append(frame_idx)
-                
-                life_loss_frames.add(frame_idx)
+    # Check outcome for "failed/killed" or "failed/fall"
+    outcome = _determine_outcome(repvars)
+    
+    if outcome == "failed/killed":
+        # Add a hit event at the end or appropriate time
+        # We'll use the last frame as the onset for the kill hit
+        last_frame = len(repvars.get("lives", [])) - 1
+        if last_frame > 0:
+            onset.append(last_frame / FS)
+            duration.append(0)
+            trial_type.append("Hit/killed")
+            level.append(repvars.get("level", 0))
+            frame_start.append(last_frame)
+            frame_stop.append(last_frame)
+            
+    elif outcome == "failed/fall":
+        # Add a hit event for fall
+        last_frame = len(repvars.get("lives", [])) - 1
+        if last_frame > 0:
+            onset.append(last_frame / FS)
+            duration.append(0)
+            trial_type.append("Hit/fall")
+            level.append(repvars.get("level", 0))
+            frame_start.append(last_frame)
+            frame_stop.append(last_frame)
 
     events_df = pd.DataFrame(
         data={
@@ -354,8 +421,7 @@ def generate_hits_taken_events(repvars, FS=60):
 def generate_bricks_smashed_events(repvars, FS=60):
     """Generate events for when Mario smashes bricks.
 
-    In Super Mario Bros 3, brick breaking gives 10 points.
-    We detect score increments of 10 while in_air flag is set.
+    We detect score increments of 1.
 
     Parameters
     ----------
@@ -392,9 +458,10 @@ def generate_bricks_smashed_events(repvars, FS=60):
 
     score_increments = list(np.diff(repvars["score"]))
     
-    # In SMB3, brick breaking gives 10 points
+    # In SMB3, brick breaking usually gives 10 points
+    # But user requested to count score increments of 1
     for idx_val, inc in enumerate(score_increments):
-        if inc == 10:
+        if inc == 1:
             # Check if in_air flag is set (if available)
             if "in_air" in repvars:
                 if repvars["in_air"][idx_val] != 0:
@@ -538,10 +605,10 @@ def generate_powerup_events(repvars, FS=60):
         
         if curr_val > prev_val:
             # Determine powerup type based on new value
-            powerup_type = powerup_names.get(curr_val, f"unknown_{curr_val}")
+            # Note: We just report Powerup_collected as requested
             onset.append(idx / FS)
             duration.append(0)
-            trial_type.append(f"Powerup/{powerup_type}")
+            trial_type.append("Powerup_collected")
             level.append(repvars["level"])
             frame_start.append(idx)
             frame_stop.append(idx)
@@ -597,14 +664,39 @@ def generate_star_events(repvars, FS=60):
 
     timer = repvars["invincibility_timer"]
     
-    for idx in range(1, len(timer)):
-        if timer[idx - 1] == 0 and timer[idx] > 0:
-            onset.append(idx / FS)
-            duration.append(0)
-            trial_type.append("Powerup/star")
+    # Detect contiguous blocks where timer > 0
+    in_event = False
+    event_start_idx = 0
+    
+    for idx in range(len(timer)):
+        val = timer[idx]
+        
+        if val > 0 and not in_event:
+            # Event started
+            in_event = True
+            event_start_idx = idx
+            
+        elif val == 0 and in_event:
+            # Event ended
+            in_event = False
+            onset.append(event_start_idx / FS)
+            dur = (idx - event_start_idx) / FS
+            duration.append(dur)
+            trial_type.append("Star_activated")
             level.append(repvars["level"])
-            frame_start.append(idx)
+            frame_start.append(event_start_idx)
             frame_stop.append(idx)
+            
+    # Handle case where event goes until end of replay
+    if in_event:
+        idx = len(timer)
+        onset.append(event_start_idx / FS)
+        dur = (idx - event_start_idx) / FS
+        duration.append(dur)
+        trial_type.append("Star_activated")
+        level.append(repvars["level"])
+        frame_start.append(event_start_idx)
+        frame_stop.append(idx)
 
     events_df = pd.DataFrame(
         data={
@@ -657,14 +749,39 @@ def generate_flight_events(repvars, FS=60):
 
     timer = repvars["flight_timer"]
     
-    for idx in range(1, len(timer)):
-        if timer[idx - 1] == 0 and timer[idx] > 0:
-            onset.append(idx / FS)
-            duration.append(0)
-            trial_type.append("Flight_started")
+    # Detect contiguous blocks where timer > 0
+    in_event = False
+    event_start_idx = 0
+    
+    for idx in range(len(timer)):
+        val = timer[idx]
+        
+        if val > 0 and not in_event:
+            # Event started
+            in_event = True
+            event_start_idx = idx
+            
+        elif val == 0 and in_event:
+            # Event ended
+            in_event = False
+            onset.append(event_start_idx / FS)
+            dur = (idx - event_start_idx) / FS
+            duration.append(dur)
+            trial_type.append("Flight_activated")
             level.append(repvars["level"])
-            frame_start.append(idx)
+            frame_start.append(event_start_idx)
             frame_stop.append(idx)
+            
+    # Handle case where event goes until end of replay
+    if in_event:
+        idx = len(timer)
+        onset.append(event_start_idx / FS)
+        dur = (idx - event_start_idx) / FS
+        duration.append(dur)
+        trial_type.append("Flight_activated")
+        level.append(repvars["level"])
+        frame_start.append(event_start_idx)
+        frame_stop.append(idx)
 
     events_df = pd.DataFrame(
         data={
@@ -852,10 +969,8 @@ def main(args):
                                         "duration",
                                     ] = frame_count / FS
 
-                                    # rename index column to rep_index
-                                    events_dataframe.rename(
-                                        columns={"index": "rep_index"}, inplace=True
-                                    )
+                                    # rename index column to rep_index and ensure 1-based sequential
+                                    events_dataframe["rep_index"] = range(1, len(events_dataframe) + 1)
 
                                     runvars.append(repvars)
                                 else:
@@ -867,14 +982,51 @@ def main(args):
                                 runvars.append({})
 
                         # Add phase (discovery VS practice)
-                        if (
-                            events_dataframe["level"].values[0]
-                            == events_dataframe["level"].values[1]
-                        ):
-                            phase = "discovery"
-                        else:
-                            phase = "practice"
-                        events_dataframe["phase"] = phase
+                        # Discovery: until the first random level replay (which implies practice starts)
+                        # We track visited levels. If we see a level that we've seen before, AND it's not the
+                        # immediate previous one (in case of a direct replay/restart), it implies random access -> practice.
+                        # Simple heuristic: "practice" starts when we see a level again (after playing others) or jump non-sequentially?
+                        # User request: "discovery phase so long as the successive repetitions correspond to the same or successive levels,
+                        # and it should become practice as soon as the repetitions are played on random levels"
+                        
+                        visited_levels = set()
+                        phases = []
+                        current_phase = "discovery"
+                        previous_level = None
+                        
+                        # Assuming levels roughly follow a sequence (names might not sort perfectly but we can track sets)
+                        # Actually simpler: Discovery ends when we jump to a Random/Already Visited level that isn't the next expected one?
+                        # Let's rely on the User's rule: "practice as soon as repetitions are played on random levels (i.e. after the last level of the game has been repeated)"
+                        
+                        # Let's implement robust tracking:
+                        # 1. Start in 'discovery'.
+                        # 2. Iterate. If we are in 'discovery':
+                        #    Check if this level is "expected" (same as prev or "next" in some sense). 
+                        #    Since "next" is hard to define without a map, let's detect the "random" condition.
+                        #    The user said: "practice as soon as the repetitions are played on random levels (i.e. after the last level of the game has been repeated)"
+                        #    Actually, easier logic:
+                        #    If we encounter a level that we visited "long ago" (not just now), we are in practice.
+                        #    Or if the level sequence jumps "backwards".
+                        
+                        # Let's try:
+                        # Iterate through reps.
+                        # If current_phase is 'discovery':
+                        #   If level is in visited_levels AND level != previous_level:
+                        #       current_phase = 'practice'
+                        # phases.append(current_phase)
+                        # visited_levels.add(level)
+                        
+                        for idx, row in events_dataframe.iterrows():
+                            level = row["level"]
+                            if current_phase == "discovery":
+                                if level in visited_levels and level != previous_level:
+                                    current_phase = "practice"
+                            
+                            phases.append(current_phase)
+                            visited_levels.add(level)
+                            previous_level = level
+
+                        events_dataframe["phase"] = phases
                         events_df = create_runevents(
                             runvars, run_id, events_dataframe, FS=FS
                         )

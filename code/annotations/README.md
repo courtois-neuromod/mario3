@@ -105,28 +105,29 @@ Continuous events with onset and duration:
 
 **Status**: Button inputs come from the .bk2 replay file itself (not data.json) and are always extracted automatically. These events ARE generated!
 
-#### Enemy Kill Events (CURRENTLY NOT AVAILABLE)
+#### Enemy Kill Events (Available)
 Instantaneous events (duration=0):
-- `Kill/stomp` - Jumping on enemy
-- `Kill/impact` - Shell or fireball hit
-- `Kill/kick` - Kicked shell
+- `Kill/stomp` - Jumping on enemy (detected via `stomp_counter` 0->1 transition)
 
-**Status**: Requires `enemy_kill30-35` variables which are NOT in the current data.json.
+**Status**: Implemented using `stomp_counter`.
 
-#### Hit Events (PARTIALLY AVAILABLE)
+#### Hit Events (Available)
 Instantaneous events (duration=0):
-- `Hit/powerup_lost` - Lost fire flower or super mushroom state (NOT AVAILABLE - requires `powerstate`)
-- `Hit/life_lost` - Death (AVAILABLE - uses `lives` variable which exists in data.json)
+- `Hit/powerup_lost` - Lost powerup state (detected via `powerup` DECREMENT)
+- `Hit/killed` - Death via enemy collision (detected via outcome logic + `killed` flag)
+- `Hit/fall` - Death via falling into a pit (detected via outcome logic: last 100 frames X position static)
 
-**Status**: Only life loss detection works. Powerup loss requires `powerstate` variable.
+**Status**: Implemented using `powerup` and outcome logic.
 
-#### Item Collection Events (CURRENTLY NOT AVAILABLE)
-Instantaneous events (duration=0):
-- `Coin_collected` - Coin counter increases (requires `coins` variable)
-- `Powerup_collected` - Super mushroom or fire flower collected (requires `player_state` variable)
-- `Brick_smashed` - Brick destroyed by jumping (requires `jump_airborne` variable)
+#### Item Collection / Activation Events (Available)
+- `Powerup_collected` (Instant, duration=0): Any increase in `powerup` value.
+- `Star_activated` (Duration): Period where `invincibility_timer` > 0.
+- `Flight_activated` (Duration): Period where `flight_timer` > 0.
+- `P-Switch_activated` (Duration): Period where `p_switch_timer` > 0.
+- `Brick_smashed` (Instant): Brick destroyed (detected via `score` increment of 1)
+- `Coin_collected` (Instant): Coin counter increases (requires `coins` variable - Not Implemented)
 
-**Status**: None of these events can be detected with current data.json.
+**Status**: Powerups, Star, Flight, Bricks implemented. Coins pending.
 
 ### Phase Information
 
@@ -149,9 +150,13 @@ The current `data.json` file for Super Mario Bros 3 includes only:
 - ✅ `world` - Current world number
 - ✅ `killed` - Death state
 - ✅ `mario_form` - Mario's current power-up form
+- ✅ `powerup` - Mario's powerup state (0=small, 1=super, etc.)
 - ✅ `complete_level` - Level completion status
 - ✅ `time` / `timer_*` - Time remaining
 - ✅ `x_pos_map`, `y_pos_map` - Map position (for world map)
+- ✅ `invincibility_timer` - Star power timer
+- ✅ `flight_timer` - Flight timer
+- ✅ `p_switch_timer` - P-Switch timer
 
 ### Missing RAM Variables (Required for Full Event Detection)
 
@@ -161,9 +166,7 @@ The following RAM variables are needed but NOT currently in data.json:
    - `enemy_kill30` through `enemy_kill35` (6 enemy slots)
    - Values should indicate kill types (stomp, impact, kick)
 
-2. **Player State** (for various events)
-   - `player_state` - For powerup collection detection
-   - `powerstate` - For powerup loss detection
+2. **Game State** (for specific events)
    - `jump_airborne` - For brick smashing detection
    - `player_y_screen` - For level completion detection
 
@@ -173,9 +176,7 @@ The following RAM variables are needed but NOT currently in data.json:
 4. **Position Tracking** (for distance/speed metrics)
    - `xscrollHi`, `xscrollLo` - Horizontal scroll position
 
-## Placeholder Logic - Requires Complete Data.json
-
-The following sections of the code contain placeholder logic that **must be updated** once the `data.json` file for Super Mario Bros 3 is completed:
+## Logic Status
 
 ### 1. Enemy Kill Detection
 - **Location**: `generate_kill_events()` function
@@ -184,18 +185,21 @@ The following sections of the code contain placeholder logic that **must be upda
 
 ### 2. Hit Detection
 - **Location**: `generate_hits_taken_events()` function
-- **Current Status**: Only detects life losses (works!), powerup losses skipped
-- **TODO**: Verify powerstate change threshold for SMB3
+- **Current Status**: Fully implemented using `powerup` decrements and outcome logic.
 
 ### 3. Brick Destruction
 - **Location**: `generate_bricks_smashed_events()` function
-- **Current Status**: Returns empty dataframe if required variables missing
+- **Current Status**: Implemented using score increments, but `jump_airborne` check is skipped if missing.
 - **TODO**: Verify score increment value and jump_airborne detection
 
 ### 4. Powerup Collection
 - **Location**: `generate_powerup_events()` function
-- **Current Status**: Returns empty dataframe if player_state missing
-- **TODO**: Verify player_state values for powerup animation in SMB3
+- **Current Status**: Fully implemented using `powerup` increments.
+
+### 5. Coin Collection
+- **Location**: `generate_coin_events()` function
+- **Current Status**: Returns empty dataframe if coins variable missing
+- **TODO**: Add coins variable to data.json
 
 ### 5. Coin Collection
 - **Location**: `generate_coin_events()` function
