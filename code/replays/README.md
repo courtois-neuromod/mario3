@@ -15,7 +15,7 @@ Processes `.bk2` replay files to generate video, metadata, game variables, and l
 ## Usage
 
 ```bash
-python code/replays/generate_replays.py --datapath . --output . [options]
+python code/replays/generate_replays.py
 ```
 
 ### Arguments (Brief)
@@ -29,7 +29,7 @@ python code/replays/generate_replays.py --datapath . --output . [options]
 
 ## Generated Files
 
-For each replay (e.g., `sub-01_ses-001_..._rep-000`):
+For each replay (e.g., `sub-{subject}_ses-{session}_task-mario3_run-{run}_rep-{replay}.bk2`):
 1.  `*_recording.mp4`: Video recording.
 2.  `*_variables.json`: Frame-by-frame RAM variables (if extracted).
 3.  `*_lowlevel.npy`: Luminance, optical flow, and audio features.
