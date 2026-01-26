@@ -1,14 +1,12 @@
 # Mario 3 Annotations Generator
 
-This script generates BIDS-compatible annotated event files (`*_desc-annotated_events.tsv`) for the Super Mario Bros 3 dataset. It reads pre-processed game variables and computes detailed annotations for all gameplay events including button presses, enemy kills, hits taken, item collection, and more.
-
-**IMPORTANT NOTE**: This script contains placeholder logic that needs to be updated once the `data.json` file for Super Mario Bros 3 is completed. Many game-specific variables are currently missing from `data.json`, so most event detection features will not work until the data file is updated. The script handles missing variables gracefully to avoid crashes.
+Generates BIDS-compatible `*_desc-annotated_events.tsv` files from pre-processed game variables.
 
 ## Prerequisites
 
 - Python 3.8 or higher
 - The Mario 3 dataset with `.bk2` replay files
-- **Replays must be processed first** using `code/replays/create_replays.py` to generate `*_variables.json` files
+- **Replays must be processed first** using `code/replays/generate_replays.py` to generate `*_variables.json` files
 - ROM files in the `stimuli/` directory
 
 ## Installation
@@ -113,6 +111,10 @@ Instantaneous events (duration=0):
 - `P-Switch_activated` (Variable duration): Period where `p_switch_timer` > 0.
 - `Brick_smashed` (Instant): Brick destroyed (detected via `score` increment of 1)
 - `Coin_collected` (Instant): Coin counter increases
+
+#### Level Completion Events
+Instantaneous events (duration=0):
+- `Level_complete` - Level completed (detected via complete_level transition to 1, when killed=0). **Note:** Onset is adjusted 5 seconds earlier to better reflect the actual moment of completion.
 
 ### Phase Information
 

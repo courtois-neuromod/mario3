@@ -101,6 +101,15 @@ def _determine_outcome(repetition_variables):
         if complete_indices:
             idx = complete_indices[0]
             
+            # Check Killed at the frame of completion FIRST
+            # If killed is 0 when complete_level becomes 1, the level was cleared
+            is_killed = (repetition_variables["killed"][idx] == 1)
+            
+            if not is_killed:
+                # complete_level=1 and killed=0 means level was successfully cleared
+                return "cleared"
+            
+            # If killed=1 at completion, determine failure type
             # Check Timer at the frame of completion
             t_h = repetition_variables["timer_100"][idx]
             t_t = repetition_variables["timer_10"][idx]
@@ -109,20 +118,14 @@ def _determine_outcome(repetition_variables):
             
             if timer_at_completion == 0:
                 return "failed/timeout"
-                
-            # Check Killed at the frame of completion
-            is_killed = (repetition_variables["killed"][idx] == 1)
             
-            if is_killed:
-                # Determine if Fall or Killed
-                x_low = repetition_variables["player_x_level_low"]
-                # Check last 100 frames of the replay for fall signature
-                last_segment = x_low[-100:] if len(x_low) > 0 else []
-                if last_segment and all(v == 0 for v in last_segment):
-                    return "failed/fall"
-                return "failed/killed"
-                
-            return "cleared"
+            # Determine if Fall or Killed
+            x_low = repetition_variables["player_x_level_low"]
+            # Check last 100 frames of the replay for fall signature
+            last_segment = x_low[-100:] if len(x_low) > 0 else []
+            if last_segment and all(v == 0 for v in last_segment):
+                return "failed/fall"
+            return "failed/killed"
         
         # If no completion detected, fall back to end-of-replay checks
         

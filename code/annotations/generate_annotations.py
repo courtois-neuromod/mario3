@@ -21,7 +21,7 @@ Usage:
     python generate_annotations.py --datapath /path/to/mario3
 
 Note: Requires replay files (_variables.json) in gamelogs/ folders.
-      Run create_replays.py first if they don't exist.
+      Run generate_replays.py first if they don't exist.
 """
 
 import argparse
@@ -52,27 +52,32 @@ def _determine_outcome(repetition_variables):
             if complete_indices:
                 idx = complete_indices[0]
                 
-                # Check Timer at the frame of completion
-                t_h = repetition_variables["timer_100"][idx]
-                t_t = repetition_variables["timer_10"][idx]
-                t_o = repetition_variables["timer_1"][idx]
-                timer_at_completion = t_h * 100 + t_t * 10 + t_o
-                
-                if timer_at_completion == 0:
-                    return "failed/timeout"
-                    
-                # Check Killed at the frame of completion
+                # Check Killed at the frame of completion FIRST
+                # If killed is 0 when complete_level becomes 1, the level was cleared
                 if "killed" in repetition_variables:
                     is_killed = (repetition_variables["killed"][idx] == 1)
                     
-                    if is_killed:
-                        # Determine if Fall or Killed
-                        if "player_x_level_low" in repetition_variables:
-                            x_low = repetition_variables["player_x_level_low"]
-                            last_segment = x_low[-100:] if len(x_low) > 0 else []
-                            if last_segment and all(v == 0 for v in last_segment):
-                                return "failed/fall"
-                        return "failed/killed"
+                    if not is_killed:
+                        # complete_level=1 and killed=0 means level was successfully cleared
+                        return "cleared"
+                    
+                    # If killed=1 at completion, determine failure type
+                    # Check Timer at the frame of completion
+                    t_h = repetition_variables["timer_100"][idx]
+                    t_t = repetition_variables["timer_10"][idx]
+                    t_o = repetition_variables["timer_1"][idx]
+                    timer_at_completion = t_h * 100 + t_t * 10 + t_o
+                    
+                    if timer_at_completion == 0:
+                        return "failed/timeout"
+                    
+                    # Determine if Fall or Killed
+                    if "player_x_level_low" in repetition_variables:
+                        x_low = repetition_variables["player_x_level_low"]
+                        last_segment = x_low[-100:] if len(x_low) > 0 else []
+                        if last_segment and all(v == 0 for v in last_segment):
+                            return "failed/fall"
+                    return "failed/killed"
                 
                 return "cleared"
         
@@ -186,6 +191,13 @@ def create_runevents(runvars, run_id, events_dataframe, FS=60):
 
             # P-Switch (SMB3-specific)
             temp_df = generate_pswitch_events(repvars, FS=FS)
+            if not temp_df.empty:
+                temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
+                temp_df["rep_index"] = rep_index
+                all_df.append(temp_df)
+
+            # Level complete
+            temp_df = generate_level_complete_events(repvars, FS=FS)
             if not temp_df.empty:
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
                 temp_df["rep_index"] = rep_index
@@ -842,6 +854,76 @@ def generate_pswitch_events(repvars, FS=60):
             level.append(repvars["level"])
             frame_start.append(idx)
             frame_stop.append(idx)
+
+    events_df = pd.DataFrame(
+        data={
+            "onset": onset,
+            "duration": duration,
+            "trial_type": trial_type,
+            "level": level,
+            "frame_start": frame_start,
+            "frame_stop": frame_stop,
+        }
+    )
+    return events_df
+
+
+def generate_level_complete_events(repvars, FS=60):
+    """Generate events for level completion.
+
+    Super Mario Bros 3 level completion is detected when complete_level
+    transitions to 1 and killed is 0 at that frame.
+
+    Parameters
+    ----------
+    repvars : dict
+        Dictionary containing all the variables of a single repetition
+    FS : int
+        The sampling rate of the .bk2 file (default: 60)
+
+    Returns
+    -------
+    events_df : pandas.DataFrame
+        Events DataFrame in BIDS-compatible format
+    """
+    onset = []
+    duration = []
+    trial_type = []
+    level = []
+    frame_start = []
+    frame_stop = []
+
+    if "complete_level" not in repvars:
+        return pd.DataFrame(
+            data={
+                "onset": onset,
+                "duration": duration,
+                "trial_type": trial_type,
+                "level": level,
+                "frame_start": frame_start,
+                "frame_stop": frame_stop,
+            }
+        )
+
+    complete_level = repvars["complete_level"]
+    killed = repvars.get("killed", [0] * len(complete_level))
+
+    # Detect when complete_level becomes 1 and killed is 0
+    LOOKBACK_SECONDS = 5
+    LOOKBACK_FRAMES = int(LOOKBACK_SECONDS * FS)  # 300 frames at 60fps
+    
+    for idx in range(1, len(complete_level)):
+        if complete_level[idx] == 1 and complete_level[idx - 1] == 0:
+            if killed[idx] == 0:
+                # Adjust onset to 5 seconds earlier (when the actual completion happened)
+                adjusted_frame = max(0, idx - LOOKBACK_FRAMES)
+                onset.append(adjusted_frame / FS)
+                duration.append(0)
+                trial_type.append("Level_complete")
+                level.append(repvars["level"])
+                frame_start.append(adjusted_frame)
+                frame_stop.append(adjusted_frame)
+                break  # Only one level complete event per repetition
 
     events_df = pd.DataFrame(
         data={
