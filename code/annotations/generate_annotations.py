@@ -129,7 +129,6 @@ def create_runevents(runvars, run_id, events_dataframe, FS=60):
         n_frames_total = len(repvars["START"])
         repvars["rep_onset"] = [events_dataframe["onset"][idx]]
         repvars["rep_duration"] = n_frames_total / FS
-        rep_index = events_dataframe['rep_index'].iloc[idx]
 
         if len(repvars.keys()) > 0:  # Check if repetition logs are available
             # Actions - button inputs are always available from replay file
@@ -137,70 +136,60 @@ def create_runevents(runvars, run_id, events_dataframe, FS=60):
             for act in ACTIONS:
                 temp_df = generate_key_events(repvars, act, FS=FS)
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
-                temp_df["rep_index"] = rep_index
                 all_df.append(temp_df)
 
             # Kills
             temp_df = generate_kill_events(repvars, FS=FS)
             if not temp_df.empty:
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
-                temp_df["rep_index"] = rep_index
                 all_df.append(temp_df)
 
             # Hits taken
             temp_df = generate_hits_taken_events(repvars, FS=FS)
             if not temp_df.empty:
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
-                temp_df["rep_index"] = rep_index
                 all_df.append(temp_df)
 
             # Bricks smashed
             temp_df = generate_bricks_smashed_events(repvars, FS=FS)
             if not temp_df.empty:
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
-                temp_df["rep_index"] = rep_index
                 all_df.append(temp_df)
 
             # Coins collected
             temp_df = generate_coin_events(repvars, FS=FS)
             if not temp_df.empty:
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
-                temp_df["rep_index"] = rep_index
                 all_df.append(temp_df)
 
             # Powerups
             temp_df = generate_powerup_events(repvars, FS=FS)
             if not temp_df.empty:
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
-                temp_df["rep_index"] = rep_index
                 all_df.append(temp_df)
 
             # Star power (SMB3-specific)
             temp_df = generate_star_events(repvars, FS=FS)
             if not temp_df.empty:
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
-                temp_df["rep_index"] = rep_index
                 all_df.append(temp_df)
 
             # Flight (SMB3-specific)
             temp_df = generate_flight_events(repvars, FS=FS)
             if not temp_df.empty:
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
-                temp_df["rep_index"] = rep_index
                 all_df.append(temp_df)
 
             # P-Switch (SMB3-specific)
             temp_df = generate_pswitch_events(repvars, FS=FS)
             if not temp_df.empty:
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
-                temp_df["rep_index"] = rep_index
                 all_df.append(temp_df)
 
             # Level complete
             temp_df = generate_level_complete_events(repvars, FS=FS)
             if not temp_df.empty:
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
-                temp_df["rep_index"] = rep_index
                 all_df.append(temp_df)
 
     try:
@@ -215,9 +204,9 @@ def create_runevents(runvars, run_id, events_dataframe, FS=60):
             if col in events_df.columns:
                 events_df[col] = events_df[col].astype('Int64')  # nullable integer
 
-        # Reorder columns: trial_type, rep_index, level, onset, duration, frame_start, frame_stop, phase
+        # Reorder columns: trial_type, level, onset, duration, frame_start, frame_stop, phase, rep_index, stim_file
         cols = events_df.columns.tolist()
-        priority_cols = ['trial_type', 'rep_index', 'level', 'onset', 'duration', 'frame_start', 'frame_stop', 'phase']
+        priority_cols = ['trial_type', 'level', 'onset', 'duration', 'frame_start', 'frame_stop', 'phase', 'rep_index', 'stim_file']
         priority_cols = [c for c in priority_cols if c in cols]  # only include existing columns
         other_cols = [c for c in cols if c not in priority_cols]
         events_df = events_df[priority_cols + other_cols]
@@ -1001,7 +990,7 @@ def main(args):
                         ]  # select only repetition events
                         events_dataframe = events_dataframe[
                             ["trial_type", "onset", "level", "stim_file"]
-                        ].reset_index()  # select only relevant columns
+                        ].reset_index(drop=True)  # select only relevant columns
                         bk2_files = events_dataframe["stim_file"].values.tolist()
                         runvars = []
                         for bk2_idx, bk2_file in enumerate(bk2_files):
@@ -1051,8 +1040,8 @@ def main(args):
                                         "duration",
                                     ] = frame_count / FS
 
-                                    # rename index column to rep_index and ensure 1-based sequential
-                                    events_dataframe["rep_index"] = range(1, len(events_dataframe) + 1)
+                                    # Set rep_index to 0-based sequential index for gym-retro_game events
+                                    events_dataframe["rep_index"] = range(len(events_dataframe))
 
                                     runvars.append(repvars)
                                 else:
