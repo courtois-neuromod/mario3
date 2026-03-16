@@ -8,7 +8,7 @@ BIDS-compatible event files containing:
   - Kill events (stomp) via stomp_counter
   - Hit events (powerup lost, killed) via powerup/outcome
   - Brick smashing events via score increments (1 point)
-  - Coin collection events via coins variable
+  - Coin collection events via coins_p1 variable
   - Powerup collection events via powerup variable increases
   - Star power events via invincibility_timer
   - Flight events via flight_timer
@@ -497,7 +497,7 @@ def generate_bricks_smashed_events(repvars, FS=60):
 def generate_coin_events(repvars, FS=60):
     """Generate events for coin collection.
 
-    Detected by increase in coins counter.
+    Detected by increase in coins_p1 counter.
 
     Parameters
     ----------
@@ -518,8 +518,8 @@ def generate_coin_events(repvars, FS=60):
     frame_start = []
     frame_stop = []
 
-    # Check if coins variable is available
-    if "coins" not in repvars:
+    # Check if coins_p1 variable is available
+    if "coins_p1" not in repvars:
         return pd.DataFrame(
             data={
                 "onset": onset,
@@ -531,7 +531,7 @@ def generate_coin_events(repvars, FS=60):
             }
         )
 
-    diff_coins = np.diff(repvars["coins"])
+    diff_coins = np.diff(repvars["coins_p1"])
     for idx_val, val in enumerate(diff_coins):
         if val > 0:
             onset.append(idx_val / FS)

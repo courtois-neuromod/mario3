@@ -412,7 +412,7 @@ def create_sidecar_dict(repetition_variables):
         "Enemies_stomped": count_stomps(repetition_variables),
         
         # === Items ===
-        "Coins": _safe_diff(repetition_variables, "coins"),
+        "Coins": _safe_diff(repetition_variables, "coins_p1"),
         "Powerups_collected": count_powerups_collected(repetition_variables),
         "Stars_collected": count_star_power_activations(repetition_variables),
         "Bricks_smashed": count_bricks_smashed(repetition_variables),
