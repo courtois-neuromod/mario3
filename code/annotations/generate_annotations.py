@@ -174,11 +174,6 @@ def create_runevents(runvars, run_id, events_dataframe, FS=60):
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
                 all_df.append(temp_df)
 
-            # Flight (SMB3-specific)
-            temp_df = generate_flight_events(repvars, FS=FS)
-            if not temp_df.empty:
-                temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
-                all_df.append(temp_df)
 
             # P-Switch (SMB3-specific)
             temp_df = generate_pswitch_events(repvars, FS=FS)
@@ -186,11 +181,6 @@ def create_runevents(runvars, run_id, events_dataframe, FS=60):
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
                 all_df.append(temp_df)
 
-            # Level complete
-            temp_df = generate_level_complete_events(repvars, FS=FS)
-            if not temp_df.empty:
-                temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
-                all_df.append(temp_df)
 
     try:
         events_df = pd.concat(all_df).sort_values(by="onset").reset_index(drop=True)
@@ -338,11 +328,14 @@ def generate_kill_events(repvars, FS=60):
 
 
 def generate_hits_taken_events(repvars, FS=60):
-    """Generate events for when Mario takes damage or loses a life.
+    """Generate events for when Mario takes damage, loses a life, or completes a level.
 
-    Super Mario Bros 3 hit detection:
-    - Powerup lost: powerup variable 1->0
-    - Killed: outcome is failed/killed
+    Super Mario Bros 3 detection:
+    - Powerup lost: powerup variable decreases
+    - End-of-replay events detected via timer_subframe freezing until end of replay:
+      - Level_complete: if goal_cards_p1 changes value at/after the freeze frame
+      - Hit/fall: if player_y_level reaches 0 in the 120 frames before freeze
+      - Hit/killed: otherwise
 
     Parameters
     ----------
@@ -363,15 +356,10 @@ def generate_hits_taken_events(repvars, FS=60):
     frame_start = []
     frame_stop = []
 
-    # Track frames where we detected a life loss (to avoid double-counting)
-    life_loss_frames = set()
-
-
-    # Powerup lost (powerup 1 -> 0)
+    # Powerup lost (any decrement in powerup value, e.g. 3->1, 1->0)
     if "powerup" in repvars:
         powerups = repvars["powerup"]
         for frame_idx in range(1, len(powerups)):
-            # Count any decrement in powerup value (e.g. 3->1, 1->0)
             if powerups[frame_idx] < powerups[frame_idx - 1]:
                 onset.append(frame_idx / FS)
                 duration.append(0)
@@ -380,31 +368,52 @@ def generate_hits_taken_events(repvars, FS=60):
                 frame_start.append(frame_idx)
                 frame_stop.append(frame_idx)
 
-    # Check outcome for "failed/killed" or "failed/fall"
-    outcome = _determine_outcome(repvars)
-    
-    if outcome == "failed/killed":
-        # Add a hit event at the end or appropriate time
-        # We'll use the last frame as the onset for the kill hit
-        last_frame = len(repvars.get("lives", [])) - 1
-        if last_frame > 0:
-            onset.append(last_frame / FS)
+    # Detect end-of-replay event via timer_subframe freeze:
+    # find the first frame where timer_subframe stays constant until end of replay
+    if "timer_subframe" in repvars:
+        timer_sf = repvars["timer_subframe"]
+        n = len(timer_sf)
+        freeze_frame = None
+        if n > 1:
+            freeze_val = timer_sf[-1]
+            freeze_frame = n - 1
+            for i in range(n - 2, -1, -1):
+                if timer_sf[i] == freeze_val:
+                    freeze_frame = i
+                else:
+                    break
+
+        if freeze_frame is not None and freeze_frame > 0:
+            # Level_complete if goal_cards_p1 changes value at or after freeze_frame
+            cards = repvars.get("goal_cards_p1", [])
+            cards_changed = False
+            if len(cards) > 0:
+                ref_val = cards[max(0, freeze_frame - 1)]
+                for i in range(freeze_frame, len(cards)):
+                    if cards[i] != ref_val:
+                        cards_changed = True
+                        break
+
+            if cards_changed:
+                trial_type_val = "Level_complete"
+            else:
+                # Hit/fall if player_y_level reaches 0 in the 120 frames before freeze
+                player_y = repvars.get("player_y_level", [])
+                fell = False
+                if len(player_y) > 0:
+                    window_start = max(0, freeze_frame - 120)
+                    for i in range(window_start, freeze_frame):
+                        if player_y[i] == 0:
+                            fell = True
+                            break
+                trial_type_val = "Hit/fall" if fell else "Hit/killed"
+
+            onset.append(freeze_frame / FS)
             duration.append(0)
-            trial_type.append("Hit/killed")
+            trial_type.append(trial_type_val)
             level.append(repvars.get("level", 0))
-            frame_start.append(last_frame)
-            frame_stop.append(last_frame)
-            
-    elif outcome == "failed/fall":
-        # Add a hit event for fall
-        last_frame = len(repvars.get("lives", [])) - 1
-        if last_frame > 0:
-            onset.append(last_frame / FS)
-            duration.append(0)
-            trial_type.append("Hit/fall")
-            level.append(repvars.get("level", 0))
-            frame_start.append(last_frame)
-            frame_stop.append(last_frame)
+            frame_start.append(freeze_frame)
+            frame_stop.append(freeze_frame)
 
     events_df = pd.DataFrame(
         data={
@@ -712,90 +721,6 @@ def generate_star_events(repvars, FS=60):
     return events_df
 
 
-def generate_flight_events(repvars, FS=60):
-    """Generate events for flight activation (Raccoon/Tanooki Mario).
-
-    Detected by flight_timer going from 0 to >0.
-
-    Parameters
-    ----------
-    repvars : dict
-        Dictionary containing all the variables of a single repetition
-    FS : int
-        The sampling rate of the .bk2 file
-
-    Returns
-    -------
-    events_df : pandas.DataFrame
-        Events DataFrame in BIDS-compatible format
-    """
-    onset = []
-    duration = []
-    trial_type = []
-    level = []
-    frame_start = []
-    frame_stop = []
-
-    if "flight_timer" not in repvars:
-        return pd.DataFrame(
-            data={
-                "onset": onset,
-                "duration": duration,
-                "trial_type": trial_type,
-                "level": level,
-                "frame_start": frame_start,
-                "frame_stop": frame_stop,
-            }
-        )
-
-    timer = repvars["flight_timer"]
-    
-    # Detect contiguous blocks where timer > 0
-    in_event = False
-    event_start_idx = 0
-    
-    for idx in range(len(timer)):
-        val = timer[idx]
-        
-        if val > 0 and not in_event:
-            # Event started
-            in_event = True
-            event_start_idx = idx
-            
-        elif val == 0 and in_event:
-            # Event ended
-            in_event = False
-            onset.append(event_start_idx / FS)
-            dur = (idx - event_start_idx) / FS
-            duration.append(dur)
-            trial_type.append("Flight_activated")
-            level.append(repvars["level"])
-            frame_start.append(event_start_idx)
-            frame_stop.append(idx)
-            
-    # Handle case where event goes until end of replay
-    if in_event:
-        idx = len(timer)
-        onset.append(event_start_idx / FS)
-        dur = (idx - event_start_idx) / FS
-        duration.append(dur)
-        trial_type.append("Flight_activated")
-        level.append(repvars["level"])
-        frame_start.append(event_start_idx)
-        frame_stop.append(idx)
-
-    events_df = pd.DataFrame(
-        data={
-            "onset": onset,
-            "duration": duration,
-            "trial_type": trial_type,
-            "level": level,
-            "frame_start": frame_start,
-            "frame_stop": frame_stop,
-        }
-    )
-    return events_df
-
 
 def generate_pswitch_events(repvars, FS=60):
     """Generate events for P-Switch activation.
@@ -856,75 +781,6 @@ def generate_pswitch_events(repvars, FS=60):
     )
     return events_df
 
-
-def generate_level_complete_events(repvars, FS=60):
-    """Generate events for level completion.
-
-    Super Mario Bros 3 level completion is detected when complete_level
-    transitions to 1 and killed is 0 at that frame.
-
-    Parameters
-    ----------
-    repvars : dict
-        Dictionary containing all the variables of a single repetition
-    FS : int
-        The sampling rate of the .bk2 file (default: 60)
-
-    Returns
-    -------
-    events_df : pandas.DataFrame
-        Events DataFrame in BIDS-compatible format
-    """
-    onset = []
-    duration = []
-    trial_type = []
-    level = []
-    frame_start = []
-    frame_stop = []
-
-    if "complete_level" not in repvars:
-        return pd.DataFrame(
-            data={
-                "onset": onset,
-                "duration": duration,
-                "trial_type": trial_type,
-                "level": level,
-                "frame_start": frame_start,
-                "frame_stop": frame_stop,
-            }
-        )
-
-    complete_level = repvars["complete_level"]
-    killed = repvars.get("killed", [0] * len(complete_level))
-
-    # Detect when complete_level becomes 1 and killed is 0
-    LOOKBACK_SECONDS = 5
-    LOOKBACK_FRAMES = int(LOOKBACK_SECONDS * FS)  # 300 frames at 60fps
-    
-    for idx in range(1, len(complete_level)):
-        if complete_level[idx] == 1 and complete_level[idx - 1] == 0:
-            if killed[idx] == 0:
-                # Adjust onset to 5 seconds earlier (when the actual completion happened)
-                adjusted_frame = max(0, idx - LOOKBACK_FRAMES)
-                onset.append(adjusted_frame / FS)
-                duration.append(0)
-                trial_type.append("Level_complete")
-                level.append(repvars["level"])
-                frame_start.append(adjusted_frame)
-                frame_stop.append(adjusted_frame)
-                break  # Only one level complete event per repetition
-
-    events_df = pd.DataFrame(
-        data={
-            "onset": onset,
-            "duration": duration,
-            "trial_type": trial_type,
-            "level": level,
-            "frame_start": frame_start,
-            "frame_stop": frame_stop,
-        }
-    )
-    return events_df
 
 
 def main(args):
