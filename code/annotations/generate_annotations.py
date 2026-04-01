@@ -37,69 +37,38 @@ import json
 def _determine_outcome(repetition_variables):
     """
     Determine how the replay ended: 'cleared' or 'failed/*'.
-    
+
     Outcomes:
-    - cleared: Level completed successfully (complete_level hits 1 AND killed is 0 at that frame)
+    - cleared: Level completed successfully (any of goal_cards_p1_1/2/3 increases)
     - failed/fall: Last 100 frames of player_x_level_low are all 0
     - failed/timeout: Timer reaches 0
     - failed/killed: Killed by enemy (default failure if not fall/timeout)
     """
     try:
-        # Check if level was ever completed
-        if "complete_level" in repetition_variables:
-            complete_indices = [i for i, x in enumerate(repetition_variables["complete_level"]) if x == 1]
-            
-            if complete_indices:
-                idx = complete_indices[0]
-                
-                # Check Killed at the frame of completion FIRST
-                # If killed is 0 when complete_level becomes 1, the level was cleared
-                if "killed" in repetition_variables:
-                    is_killed = (repetition_variables["killed"][idx] == 1)
-                    
-                    if not is_killed:
-                        # complete_level=1 and killed=0 means level was successfully cleared
-                        return "cleared"
-                    
-                    # If killed=1 at completion, determine failure type
-                    # Check Timer at the frame of completion
-                    t_h = repetition_variables["timer_100"][idx]
-                    t_t = repetition_variables["timer_10"][idx]
-                    t_o = repetition_variables["timer_1"][idx]
-                    timer_at_completion = t_h * 100 + t_t * 10 + t_o
-                    
-                    if timer_at_completion == 0:
-                        return "failed/timeout"
-                    
-                    # Determine if Fall or Killed
-                    if "player_x_level_low" in repetition_variables:
-                        x_low = repetition_variables["player_x_level_low"]
-                        last_segment = x_low[-100:] if len(x_low) > 0 else []
-                        if last_segment and all(v == 0 for v in last_segment):
-                            return "failed/fall"
-                    return "failed/killed"
-                
+        # Check if level was cleared: any goal_cards_p1 variable increases
+        for card_var in ["goal_cards_p1_1", "goal_cards_p1_2", "goal_cards_p1_3"]:
+            cards = repetition_variables.get(card_var, [])
+            if len(cards) > 1 and any(cards[i] > cards[i - 1] for i in range(1, len(cards))):
                 return "cleared"
-        
+
         # If no completion detected, fall back to end-of-replay checks
-        
-        # Check for Timeout (at end)
-        if "timer_100" in repetition_variables:
-            timer_h = repetition_variables["timer_100"][-1]
-            timer_t = repetition_variables["timer_10"][-1]
-            timer_o = repetition_variables["timer_1"][-1]
-            timer = timer_h * 100 + timer_t * 10 + timer_o
-                
-            if timer == 0:
-                return "failed/timeout"
-            
+
+        # Check for Timeout: time variable reaches 0, confirmed by all timer digits being 0
+        time_val = repetition_variables.get("time", [])
+        all_timer_zero = (
+            repetition_variables.get("timer_100", [1])[-1] == 0
+            and repetition_variables.get("timer_10", [1])[-1] == 0
+            and repetition_variables.get("timer_1", [1])[-1] == 0
+        )
+        if (time_val and time_val[-1] == 0) or all_timer_zero:
+            return "failed/timeout"
+
         # Check for Fall vs Killed
-        if "player_x_level_low" in repetition_variables:
-            x_low = repetition_variables["player_x_level_low"]
-            last_segment = x_low[-100:] if len(x_low) > 0 else []
-            
-            if last_segment and all(v == 0 for v in last_segment):
-                return "failed/fall"
+        x_low = repetition_variables.get("player_x_level_low", [])
+        last_segment = x_low[-100:] if len(x_low) > 0 else []
+
+        if last_segment and all(v == 0 for v in last_segment):
+            return "failed/fall"
 
         return "failed/killed"
         
