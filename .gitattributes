@@ -10,5 +10,3 @@
 sub-*/**/*_events.tsv annex.largefiles=anything
 *.bk2 annex.largefiles=anything
 .bidsignore annex.largefiles=nothing
-* annex.backend=MD5E
-**/.git* annex.largefiles=nothing
