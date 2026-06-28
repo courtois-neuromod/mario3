@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-mark_missing_bk2s.py
+fix_bk2_duplicates.py
 
-Mark the *missing* duplicate repetitions in a Mario3 BIDS dataset's events.tsv
+Detect duplicate .bk2 recordings in a Mario3 BIDS dataset, mark missing reps
+in events.tsv files, validate coherence, and optionally remove the duplicate
 files.
 
 Background
@@ -10,7 +11,11 @@ Background
 A bug in the BizHawk recording pipeline caused some `.bk2` replay files to be
 saved with duplicate content: when a level was played several times in a
 session, the later replays were overwritten with the data of the *first* play.
-`bk2_duplicates.csv` lists these duplicate groups.
+
+Two replays are considered duplicates if:
+  - their action sequences are identical, OR
+  - one sequence equals the other with its first frame removed
+    (i.e. they are the same replay but one has one extra leading frame)
 
 Empirically (verified against the PsychoPy logs for every group whose logs
 survive), the single surviving recording in each group always corresponds to
@@ -53,12 +58,15 @@ where the kept rep is itself MD5E) are FLAGGED and left untouched. Removal uses
 
 Usage
 -----
-    python mark_missing_bk2s.py                 # apply (./mario3, ./bk2_duplicates.csv) + validate
-    python mark_missing_bk2s.py --dry-run       # preview, change nothing, still validate
-    python mark_missing_bk2s.py --unlock --remove-bk2   # mark events.tsv AND remove duplicate .bk2
-    python mark_missing_bk2s.py --validate-only # only run the coherence validation
-    python mark_missing_bk2s.py --backup        # write a .bak next to each modified file
-    python mark_missing_bk2s.py --dataset /path/to/mario3 --duplicates /path/to/bk2_duplicates.csv
+    python fix_bk2_duplicates.py                        # detect + mark events.tsv + validate
+    python fix_bk2_duplicates.py --remove-bk2           # also remove duplicate .bk2 files
+    python fix_bk2_duplicates.py --dry-run              # preview, change nothing, still validate
+    python fix_bk2_duplicates.py --save-csv out.csv     # save detected duplicates to CSV
+    python fix_bk2_duplicates.py --duplicates existing.csv  # skip detection, use existing CSV
+    python fix_bk2_duplicates.py --validate-only        # only run the coherence validation
+    python fix_bk2_duplicates.py --unlock --remove-bk2  # mark events.tsv AND remove duplicate .bk2
+    python fix_bk2_duplicates.py --backup               # write a .bak next to each modified file
+    python fix_bk2_duplicates.py --dataset /path/to/mario3
 
 The script is idempotent: rows already set to the placeholder are left as-is and
 already-removed .bk2 are skipped, so it is safe to run more than once.
@@ -67,67 +75,196 @@ already-removed .bk2 are skipped, so it is safe to run more than once.
 import argparse
 import csv
 import glob
+import hashlib
 import os
 import re
 import subprocess
 import sys
+import zipfile
 from collections import defaultdict
+from pathlib import Path
 
 
 REP_RE = re.compile(r'_rep-(\d+)\.bk2$')
 
 
-def load_missing_reps(duplicates_csv):
-    """Return the set of BIDS bk2 paths (stim_file values) whose real recording
-    is missing.
+# ---------------------------------------------------------------------------
+# Detection
+# ---------------------------------------------------------------------------
 
-    For each duplicate group, the lowest-numbered rep is the survivor and is
-    kept; every other rep in the group is considered missing.
+def parse_actions(bk2_path):
+    """Return list of frozensets of pressed buttons, one per frame.
+
+    BizHawk NES input log format:
+      header:  P1 A|P1 Right|P1 Left|P1 Down|P1 Up|P1 Start|P1 Select|P1 B|
+      data:    |..|........|
+                  ^^         field 0: 2 system buttons (not in header, ignored)
+                    ^^^^^^^^ field 1: 8 P1 buttons, one char per position;
+                             '.' = not pressed, anything else = pressed
+    """
+    with zipfile.ZipFile(bk2_path) as z:
+        with z.open("Input Log.txt") as log:
+            lines = log.read().decode().strip().split("\n")
+    header = lines[1]
+    buttons = [b.strip() for b in header.split("|") if b.strip()]
+    frames = []
+    for line in lines[2:]:
+        parts = line.strip("|").split("|")
+        p1_field = parts[1] if len(parts) > 1 else ""
+        pressed = frozenset(
+            buttons[i] for i, c in enumerate(p1_field)
+            if i < len(buttons) and c != "."
+        )
+        frames.append(pressed)
+    return frames
+
+
+def seq_hash(frames):
+    raw = "|".join(",".join(sorted(f)) for f in frames)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _uf_find(uf, x):
+    while uf[x] != x:
+        uf[x] = uf[uf[x]]
+        x = uf[x]
+    return x
+
+
+def _uf_union(uf, x, y):
+    px, py = _uf_find(uf, x), _uf_find(uf, y)
+    if px != py:
+        uf[px] = py
+
+
+def detect_duplicates(dataset):
+    """Scan all .bk2 files in `dataset` and return duplicate groups.
+
+    Returns {group_id: [(rep, rel_path_str, n_frames), ...]} sorted by rep,
+    only for groups with more than one member. Paths are relative to `dataset`.
+    Files that cannot be parsed are printed to stderr and skipped.
+    """
+    dataset = Path(dataset)
+    bk2_files = sorted(
+        p for p in dataset.rglob("*.bk2")
+        if ".git" not in p.parts
+    )
+    print(f"Scanning {len(bk2_files)} .bk2 files for duplicates...")
+
+    full_map = defaultdict(list)
+    body_map = defaultdict(list)
+    n_frames_map = {}
+    errors = []
+
+    for bk2 in bk2_files:
+        try:
+            frames = parse_actions(bk2)
+            fh = seq_hash(frames)
+            bh = seq_hash(frames[1:]) if len(frames) > 1 else fh
+            n_frames_map[bk2] = len(frames)
+            full_map[fh].append(bk2)
+            body_map[bh].append(bk2)
+        except Exception as e:
+            errors.append((bk2, str(e)))
+
+    if errors:
+        print(f"\n{len(errors)} file(s) could not be parsed:", file=sys.stderr)
+        for path, err in errors:
+            print(f"  {path.relative_to(dataset)}: {err}", file=sys.stderr)
+
+    uf = {p: p for p in bk2_files}
+
+    for paths in full_map.values():
+        for p in paths[1:]:
+            _uf_union(uf, paths[0], p)
+
+    for h, full_paths in full_map.items():
+        if h in body_map:
+            all_paths = full_paths + body_map[h]
+            for p in all_paths[1:]:
+                _uf_union(uf, all_paths[0], p)
+
+    raw_groups = defaultdict(list)
+    for p in bk2_files:
+        raw_groups[_uf_find(uf, p)].append(p)
+
+    dup_groups = {root: paths for root, paths in raw_groups.items() if len(paths) > 1}
+    print(f"Found {len(dup_groups)} duplicate group(s) involving "
+          f"{sum(len(v) for v in dup_groups.values())} file(s).")
+
+    result = {}
+    for gid, (_, paths) in enumerate(sorted(dup_groups.items()), start=1):
+        members = []
+        for p in sorted(paths):
+            rel = str(p.relative_to(dataset))
+            m = REP_RE.search(rel)
+            rep = int(m.group(1)) if m else 0
+            members.append((rep, rel, n_frames_map[p]))
+        members.sort(key=lambda t: t[0])
+        result[str(gid)] = members
+    return result
+
+
+# ---------------------------------------------------------------------------
+# CSV I/O
+# ---------------------------------------------------------------------------
+
+def groups_from_csv(csv_path):
+    """Load groups from a bk2_duplicates.csv.
+
+    Returns {group_id: [(rep, rel_path, n_frames), ...]} sorted by rep.
     """
     groups = defaultdict(list)
-    with open(duplicates_csv, newline='') as f:
+    with open(csv_path, newline='') as f:
         reader = csv.DictReader(f)
         if 'group_id' not in reader.fieldnames or 'bk2_path' not in reader.fieldnames:
             raise SystemExit(
-                f"{duplicates_csv}: expected columns 'group_id' and 'bk2_path', "
+                f"{csv_path}: expected columns 'group_id' and 'bk2_path', "
                 f"got {reader.fieldnames}")
         for row in reader:
             path = row['bk2_path'].strip()
             m = REP_RE.search(path)
-            if not m:
-                # Not a rep-numbered bk2 path; skip defensively.
-                continue
-            rep = int(m.group(1))
-            groups[row['group_id']].append((rep, path))
-
-    missing = set()
-    kept = set()
-    for members in groups.values():
-        members.sort(key=lambda t: t[0])
-        kept.add(members[0][1])           # lowest rep -> survivor, keep
-        for _rep, path in members[1:]:    # higher reps -> missing
-            missing.add(path)
-    return missing, kept, len(groups)
-
-
-def load_groups(duplicates_csv):
-    """Return {group_id: [(rep, path, n_frames), ...]} sorted by rep."""
-    groups = defaultdict(list)
-    with open(duplicates_csv, newline='') as f:
-        for row in csv.DictReader(f):
-            m = REP_RE.search(row['bk2_path'].strip())
             if not m:
                 continue
             try:
                 n_frames = int(row.get('n_frames', '') or 0)
             except ValueError:
                 n_frames = 0
-            groups[row['group_id']].append(
-                (int(m.group(1)), row['bk2_path'].strip(), n_frames))
+            groups[row['group_id']].append((int(m.group(1)), path, n_frames))
     for members in groups.values():
         members.sort(key=lambda t: t[0])
-    return groups
+    return dict(groups)
 
+
+def groups_to_csv(groups, output_path):
+    """Write groups dict to a CSV in the bk2_duplicates.csv format."""
+    with open(output_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['group_id', 'bk2_path', 'n_frames'])
+        for gid, members in sorted(groups.items(), key=lambda kv: int(kv[0])):
+            for rep, path, n_frames in members:
+                writer.writerow([gid, path, n_frames])
+    print(f"Duplicate groups written to: {output_path}")
+
+
+# ---------------------------------------------------------------------------
+# Missing-rep helpers
+# ---------------------------------------------------------------------------
+
+def missing_reps_from_groups(groups):
+    """Return (missing_set, kept_set, n_groups) from a groups dict."""
+    missing = set()
+    kept = set()
+    for members in groups.values():
+        kept.add(members[0][1])
+        for _rep, path, _nf in members[1:]:
+            missing.add(path)
+    return missing, kept, len(groups)
+
+
+# ---------------------------------------------------------------------------
+# events.tsv parsing / indexing (for validation)
+# ---------------------------------------------------------------------------
 
 def parse_events_games(path):
     """Parse one events.tsv into an ordered list of gym-retro_game events.
@@ -191,8 +328,10 @@ def build_event_index(dataset):
     """
     loc = {}
     bylevel = {}
-    tsvs = sorted(glob.glob(os.path.join(dataset, 'sub-*', 'ses-*', 'func',
-                                         '*_events.tsv')))
+    tsvs = sorted(
+        p for p in glob.glob(os.path.join(dataset, 'sub-*', 'ses-*', 'func', '*_events.tsv'))
+        if '_desc-' not in os.path.basename(p)
+    )
     for tsv in tsvs:
         per_level = defaultdict(list)
         for game in parse_events_games(tsv):
@@ -206,7 +345,11 @@ def build_event_index(dataset):
     return loc, bylevel
 
 
-def validate_coherence(duplicates_csv, dataset, fps=60.0, tol=3.0,
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+def validate_coherence(groups, dataset, fps=60.0, tol=3.0,
                        weak_margin=2.0, report_csv=None):
     """Check, for every duplicate group, that the kept (lowest) rep is the most
     probable survivor: its .bk2 duration (n_frames / fps) should match the kept
@@ -215,7 +358,6 @@ def validate_coherence(duplicates_csv, dataset, fps=60.0, tol=3.0,
     Prints a report and (optionally) writes a per-group CSV. Returns a dict of
     counts.
     """
-    groups = load_groups(duplicates_csv)
     loc, bylevel = build_event_index(dataset)
 
     results = []
@@ -259,7 +401,7 @@ def validate_coherence(duplicates_csv, dataset, fps=60.0, tol=3.0,
 
         if best_j == 0 and diffs[0] <= tol:
             if margin is not None and margin < weak_margin:
-                rec['verdict'] = 'coherent-weak'  # kept is closest, but a sibling is nearly as close
+                rec['verdict'] = 'coherent-weak'
                 counts['coherent'] += 1
                 counts['weak'] += 1
             else:
@@ -270,7 +412,6 @@ def validate_coherence(duplicates_csv, dataset, fps=60.0, tol=3.0,
             counts['flagged'] += 1
         results.append(rec)
 
-    # ---- report ----
     total = len(groups)
     print("=" * 64)
     print("VALIDATION: is the kept (lowest) rep the most probable survivor?")
@@ -328,6 +469,10 @@ def validate_coherence(duplicates_csv, dataset, fps=60.0, tol=3.0,
     return counts
 
 
+# ---------------------------------------------------------------------------
+# git-annex helpers
+# ---------------------------------------------------------------------------
+
 def is_annex_locked(path):
     """True if `path` is a git-annex locked file (a symlink into .git/annex)."""
     if not os.path.islink(path):
@@ -382,7 +527,11 @@ def git_rm(dataset, rel_paths):
         return False
 
 
-def remove_duplicate_bk2s(duplicates_csv, dataset, dry_run):
+# ---------------------------------------------------------------------------
+# .bk2 removal
+# ---------------------------------------------------------------------------
+
+def remove_duplicate_bk2s(groups, dataset, dry_run):
     """Remove the duplicate `.bk2` files (the higher reps of each group),
     keeping only the good one (the lowest rep).
 
@@ -391,19 +540,16 @@ def remove_duplicate_bk2s(duplicates_csv, dataset, dry_run):
         the SHA256E backend (the *original* dataset files use SHA256E; the
         duplicates created by the bug use MD5E), AND
       - the higher rep's `.bk2` is an MD5E annex symlink (a duplicate).
-    Groups that don't fit this pattern (e.g. group 161: kept rep is itself an
-    MD5E file, reps span two sessions with differing content) are FLAGGED and
-    left completely untouched.
+    Groups that don't fit this pattern are FLAGGED and left completely untouched.
 
     Returns a dict of counts.
     """
-    groups = load_groups(duplicates_csv)
-    to_remove = []          # rel paths to git rm
-    kept_paths = []         # rel paths of survivors (left in place)
-    flagged = []            # (group_id, reason)
+    to_remove = []
+    kept_paths = []
+    flagged = []
     already_gone = 0
 
-    for gid, members in sorted(groups.items(), key=lambda kv: kv[0]):
+    for gid, members in sorted(groups.items(), key=lambda kv: int(kv[0])):
         kept_rep, kept_path, _ = members[0]
         kkey = annex_key(dataset, kept_path)
         if kkey is None:
@@ -422,7 +568,7 @@ def remove_duplicate_bk2s(duplicates_csv, dataset, dry_run):
             k = annex_key(dataset, path)
             if k is None:
                 if not os.path.lexists(full):
-                    already_gone += 1            # already removed -> idempotent
+                    already_gone += 1
                 else:
                     flagged.append((gid, f"rep-{rep:03d} .bk2 is a regular file, "
                                          f"not an annex symlink — not removing"))
@@ -463,31 +609,33 @@ def remove_duplicate_bk2s(duplicates_csv, dataset, dry_run):
                 already_gone=already_gone, flagged=len({g for g, _ in flagged}))
 
 
+# ---------------------------------------------------------------------------
+# events.tsv rewriting
+# ---------------------------------------------------------------------------
+
 def process_events_file(path, missing, placeholder, dry_run):
     """Rewrite missing-rep stim_file values in a single events.tsv.
 
-    Returns (n_rows_changed, n_rows_already_marked).
+    Returns (n_rows_changed, n_rows_already_marked, changed_paths).
     """
     with open(path, 'r', newline='') as f:
         text = f.read()
 
     lines = text.splitlines(keepends=True)
     if not lines:
-        return 0, 0
+        return 0, 0, set()
 
-    # Locate the stim_file column from the header.
     header = lines[0].rstrip('\r\n').split('\t')
     try:
         stim_idx = header.index('stim_file')
     except ValueError:
-        return 0, 0  # no stim_file column -> nothing to do
+        return 0, 0, set()
 
     changed = 0
     already = 0
     changed_paths = set()
     out_lines = [lines[0]]
     for line in lines[1:]:
-        # Separate the line body from its newline so we can restore it exactly.
         nl = ''
         body = line
         if body.endswith('\r\n'):
@@ -516,15 +664,21 @@ def process_events_file(path, missing, placeholder, dry_run):
     return changed, already, changed_paths
 
 
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Mark missing duplicate reps as 'Missing File' in a Mario3 "
-                    "BIDS dataset's events.tsv files.")
+        description="Detect and fix duplicate .bk2 recordings in a Mario3 BIDS dataset.")
     here = os.path.dirname(os.path.abspath(__file__))
     parser.add_argument('--dataset', default=os.path.join(here, 'mario3'),
                         help="Path to the mario3 BIDS dataset (default: ./mario3)")
-    parser.add_argument('--duplicates', default=os.path.join(here, 'bk2_duplicates.csv'),
-                        help="Path to bk2_duplicates.csv (default: ./bk2_duplicates.csv)")
+    parser.add_argument('--duplicates',
+                        help="Path to an existing bk2_duplicates.csv to use instead "
+                             "of running detection (skips the .bk2 scanning step).")
+    parser.add_argument('--save-csv',
+                        help="Save detected duplicate groups to this CSV path.")
     parser.add_argument('--placeholder', default='Missing File',
                         help="String to write into stim_file for missing reps "
                              "(default: 'Missing File')")
@@ -534,9 +688,7 @@ def main(argv=None):
                         help="Write a '<file>.bak' copy before modifying each file.")
     parser.add_argument('--unlock', action='store_true',
                         help="git annex unlock locked events.tsv files before "
-                             "editing (the dataset is a DataLad/git-annex repo, so "
-                             "its files are read-only symlinks by default). After "
-                             "running, commit with: datalad save -m '...'")
+                             "editing. After running, commit with: datalad save -m '...'")
     parser.add_argument('--validate-only', action='store_true',
                         help="Only run the coherence validation (no file edits).")
     parser.add_argument('--no-validate', action='store_true',
@@ -556,39 +708,53 @@ def main(argv=None):
 
     if not os.path.isdir(args.dataset):
         raise SystemExit(f"Dataset directory not found: {args.dataset}")
-    if not os.path.isfile(args.duplicates):
-        raise SystemExit(f"Duplicates CSV not found: {args.duplicates}")
+
+    # --- Load or detect duplicate groups ---
+    if args.duplicates:
+        if not os.path.isfile(args.duplicates):
+            raise SystemExit(f"Duplicates CSV not found: {args.duplicates}")
+        print(f"Loading duplicate groups from: {args.duplicates}")
+        groups = groups_from_csv(args.duplicates)
+        print(f"Loaded {len(groups)} group(s).")
+    else:
+        groups = detect_duplicates(args.dataset)
+
+    if not groups:
+        print("No duplicate groups found. Nothing to do.")
+        return 0
+
+    if args.save_csv:
+        groups_to_csv(groups, args.save_csv)
 
     report_csv = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               'bk2_kept_validation.csv')
 
     if args.validate_only:
-        validate_coherence(args.duplicates, args.dataset, fps=args.fps,
-                           report_csv=report_csv)
+        print()
+        validate_coherence(groups, args.dataset, fps=args.fps, report_csv=report_csv)
         return 0
 
-    missing, kept, n_groups = load_missing_reps(args.duplicates)
-    print(f"Duplicate groups            : {n_groups}")
+    missing, kept, n_groups = missing_reps_from_groups(groups)
+    print(f"\nDuplicate groups            : {n_groups}")
     print(f"Survivors kept (lowest rep) : {len(kept)}")
     print(f"Missing reps to mark        : {len(missing)}")
     print(f"Placeholder                 : {args.placeholder!r}")
     print(f"Mode                        : {'DRY-RUN (no files written)' if args.dry_run else 'APPLY'}")
     print()
 
-    tsv_files = sorted(glob.glob(os.path.join(args.dataset, 'sub-*', 'ses-*',
-                                              'func', '*_events.tsv')))
+    tsv_files = sorted(
+        p for p in glob.glob(os.path.join(args.dataset, 'sub-*', 'ses-*', 'func', '*_events.tsv'))
+        if '_desc-' not in os.path.basename(p)
+    )
     if not tsv_files:
         raise SystemExit(f"No events.tsv files found under {args.dataset}")
 
-    # Figure out which files actually need changes (dry pass), so we only
-    # unlock / back up the ones we will touch.
     files_to_change = []
     for tsv in tsv_files:
         n, _, _ = process_events_file(tsv, missing, args.placeholder, dry_run=True)
         if n:
             files_to_change.append(tsv)
 
-    # This is a DataLad/git-annex dataset: events.tsv are read-only symlinks.
     locked = [t for t in files_to_change if is_annex_locked(t)]
     if locked and not args.dry_run:
         if args.unlock:
@@ -613,7 +779,6 @@ def main(argv=None):
     matched_paths = set()
 
     for tsv in tsv_files:
-        # Back up only files we will actually change.
         if args.backup and not args.dry_run and tsv in files_to_change:
             with open(tsv, 'rb') as src, open(tsv + '.bak', 'wb') as dst:
                 dst.write(src.read())
@@ -636,15 +801,11 @@ def main(argv=None):
     if total_already:
         print(f"rows already marked         : {total_already} (left unchanged)")
 
-    # A missing rep is "accounted for" if we just marked it, or it was already
-    # marked on a previous run. Anything left over never appeared in any
-    # events.tsv (possible CSV/dataset mismatch worth surfacing).
     accounted = total_changed + total_already
     if accounted < len(missing):
         print()
-        print(f"WARNING: {len(missing) - accounted} missing-rep path(s) from the "
-              f"CSV were not found in any events.tsv (neither marked now nor "
-              f"already marked).")
+        print(f"WARNING: {len(missing) - accounted} missing-rep path(s) were not "
+              f"found in any events.tsv (neither marked now nor already marked).")
         if total_already == 0:
             not_found = missing - matched_paths
             for p in sorted(not_found)[:20]:
@@ -655,14 +816,12 @@ def main(argv=None):
     removed_count = 0
     if args.remove_bk2:
         print()
-        rm_counts = remove_duplicate_bk2s(args.duplicates, args.dataset,
-                                          args.dry_run)
+        rm_counts = remove_duplicate_bk2s(groups, args.dataset, args.dry_run)
         removed_count = rm_counts['removed']
 
     if not args.no_validate:
         print()
-        validate_coherence(args.duplicates, args.dataset, fps=args.fps,
-                           report_csv=report_csv)
+        validate_coherence(groups, args.dataset, fps=args.fps, report_csv=report_csv)
 
     if not args.dry_run and (total_changed or removed_count):
         print()
