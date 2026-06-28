@@ -1,0 +1,11 @@
+- home/hyruuk/DATA/neuromod/mario3_fix/env/lib/python3.10/site-packages/videogames_utils/replay.py:73: UserWarning: Done condition was never met in /home/hyruuk/DATA/tmp/mario3/sub-01/ses-015/gamelogs/sub-01_ses-015_task-mario3_level-w3lAirship_rep-001.bk2
+  warnings.warn(f"Done condition was never met in {bk2_path}")
+--------> finishes on mario waiting on a pipe, no death no times up
+
+- home/hyruuk/DATA/neuromod/mario3_fix/env/lib/python3.10/site-packages/videogames_utils/replay.py:73: UserWarning: Done condition was never met in /home/hyruuk/DATA/tmp/mario3/sub-01/ses-021/gamelogs/sub-01_ses-021_task-mario3_level-w7l4_rep-001.bk2
+  warnings.warn(f"Done condition was never met in {bk2_path}")
+--------> only lasts 6 seconds, nothing happens
+
+- home/hyruuk/DATA/neuromod/mario3_fix/env/lib/python3.10/site-packages/videogames_utils/replay.py:73: UserWarning: Done condition was never met in /home/hyruuk/DATA/tmp/mario3/sub-03/ses-008/gamelogs/sub-03_ses-008_task-mario3_level-w6lFortress1_rep-000.bk2
+  warnings.warn(f"Done condition was never met in {bk2_path}")
+--------> stays immobile for 36 seconds and the replay stops
