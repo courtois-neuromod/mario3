@@ -95,6 +95,8 @@ def create_runevents(runvars, run_id, events_dataframe, FS=60):
     """
     all_df = [events_dataframe]
     for idx, repvars in enumerate(runvars):
+        if not repvars:  # missing file — no replay data to annotate
+            continue
         n_frames_total = len(repvars["START"])
         repvars["rep_onset"] = [events_dataframe["onset"][idx]]
         repvars["rep_duration"] = n_frames_total / FS
@@ -819,7 +821,7 @@ def main(args):
                         bk2_files = events_dataframe["stim_file"].values.tolist()
                         runvars = []
                         for bk2_idx, bk2_file in enumerate(bk2_files):
-                            if bk2_file != "Missing file" and type(bk2_file) != float:
+                            if str(bk2_file).lower() != "missing file" and type(bk2_file) != float:
                                 print("Adding : " + bk2_file)
                                 sub = bk2_file.split("/")[0]
                                 ses = bk2_file.split("/")[1]
