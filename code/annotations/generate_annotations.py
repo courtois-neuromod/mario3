@@ -152,6 +152,13 @@ def create_runevents(runvars, run_id, events_dataframe, FS=60):
                 temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
                 all_df.append(temp_df)
 
+            # Level complete (SMB3: goal-card grab; belongs to the successful
+            # 1-life .bk2 of the level group)
+            temp_df = generate_level_complete_events(repvars, FS=FS)
+            if not temp_df.empty:
+                temp_df["onset"] = temp_df["onset"] + repvars["rep_onset"]
+                all_df.append(temp_df)
+
 
     try:
         events_df = pd.concat(all_df).sort_values(by="onset").reset_index(drop=True)
@@ -303,10 +310,11 @@ def generate_hits_taken_events(repvars, FS=60):
 
     Super Mario Bros 3 detection:
     - Powerup lost: powerup variable decreases
-    - End-of-replay events detected via timer_subframe freezing until end of replay:
-      - Level_complete: if goal_cards_p1 changes value at/after the freeze frame
+    - End-of-replay failure events detected via timer_subframe freezing until end
+      of replay (only emitted when the repetition was NOT cleared):
       - Hit/fall: if player_y_level reaches 0 in the 120 frames before freeze
       - Hit/killed: otherwise
+    Level completions are handled by generate_level_complete_events().
 
     Parameters
     ----------
@@ -355,19 +363,20 @@ def generate_hits_taken_events(repvars, FS=60):
                     break
 
         if freeze_frame is not None and freeze_frame > 0:
-            # Level_complete if goal_cards_p1 changes value at or after freeze_frame
-            cards = repvars.get("goal_cards_p1", [])
-            cards_changed = False
-            if len(cards) > 0:
-                ref_val = cards[max(0, freeze_frame - 1)]
-                for i in range(freeze_frame, len(cards)):
-                    if cards[i] != ref_val:
-                        cards_changed = True
-                        break
+            # Suppress the end-of-replay Hit event on a cleared repetition.
+            # In SMB3 a single "level attempt" spans up to three 1-life .bk2 files
+            # (grouped by IndexLevel); only the successful .bk2 grabs the goal card
+            # and ends on completion rather than on a hit. Level completion is
+            # detected and annotated separately by generate_level_complete_events()
+            # using the same goal_cards_p1_{1,2,3} signal as _determine_outcome().
+            level_cleared = False
+            for card_var in ("goal_cards_p1_1", "goal_cards_p1_2", "goal_cards_p1_3"):
+                cards = repvars.get(card_var, [])
+                if len(cards) > 1 and any(cards[i] > cards[i - 1] for i in range(1, len(cards))):
+                    level_cleared = True
+                    break
 
-            if cards_changed:
-                trial_type_val = "Level_complete"
-            else:
+            if not level_cleared:
                 # Hit/fall if player_y_level reaches 0 in the 120 frames before freeze
                 player_y = repvars.get("player_y_level", [])
                 fell = False
@@ -379,12 +388,12 @@ def generate_hits_taken_events(repvars, FS=60):
                             break
                 trial_type_val = "Hit/fall" if fell else "Hit/killed"
 
-            onset.append(freeze_frame / FS)
-            duration.append(0)
-            trial_type.append(trial_type_val)
-            level.append(repvars.get("level", 0))
-            frame_start.append(freeze_frame)
-            frame_stop.append(freeze_frame)
+                onset.append(freeze_frame / FS)
+                duration.append(0)
+                trial_type.append(trial_type_val)
+                level.append(repvars.get("level", 0))
+                frame_start.append(freeze_frame)
+                frame_stop.append(freeze_frame)
 
     events_df = pd.DataFrame(
         data={
@@ -752,6 +761,65 @@ def generate_pswitch_events(repvars, FS=60):
     )
     return events_df
 
+
+
+def generate_level_complete_events(repvars, FS=60):
+    """Generate a Level_complete event for a cleared SMB3 repetition.
+
+    Completion is detected the same way as _determine_outcome(): the level-end
+    goal card is awarded, i.e. any of goal_cards_p1_{1,2,3} increases. In SMB3 a
+    level attempt can span up to three 1-life .bk2 files (grouped by IndexLevel);
+    the goal-card increment only occurs in the successful .bk2, so this event is
+    placed in that repetition, at the frame the card is grabbed. At most one
+    Level_complete is emitted per repetition.
+
+    Parameters
+    ----------
+    repvars : dict
+        Dictionary containing all the variables of a single repetition
+    FS : int
+        The sampling rate of the .bk2 file (default: 60)
+
+    Returns
+    -------
+    events_df : pandas.DataFrame
+        Events DataFrame in BIDS-compatible format
+    """
+    onset = []
+    duration = []
+    trial_type = []
+    level = []
+    frame_start = []
+    frame_stop = []
+
+    complete_frame = None
+    for card_var in ("goal_cards_p1_1", "goal_cards_p1_2", "goal_cards_p1_3"):
+        cards = repvars.get(card_var, [])
+        for i in range(1, len(cards)):
+            if cards[i] > cards[i - 1]:
+                if complete_frame is None or i < complete_frame:
+                    complete_frame = i
+                break
+
+    if complete_frame is not None:
+        onset.append(complete_frame / FS)
+        duration.append(0)
+        trial_type.append("Level_complete")
+        level.append(repvars.get("level", 0))
+        frame_start.append(complete_frame)
+        frame_stop.append(complete_frame)
+
+    events_df = pd.DataFrame(
+        data={
+            "onset": onset,
+            "duration": duration,
+            "trial_type": trial_type,
+            "level": level,
+            "frame_start": frame_start,
+            "frame_stop": frame_stop,
+        }
+    )
+    return events_df
 
 
 def main(args):
