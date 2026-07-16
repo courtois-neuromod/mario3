@@ -92,7 +92,11 @@ def _determine_outcome(repetition_variables):
     - cleared: Level completed successfully (any of goal_cards_p1_1/2/3 increases)
     - failed/fall: Last 100 frames of player_x_level_low are all 0
     - failed/timeout: Timer reaches 0
-    - failed/killed: Killed by enemy (default failure if not fall/timeout)
+    - failed/killed: Killed by enemy (a life was lost)
+    - incomplete/interrupted: no clear/timeout/fall and no life lost -> recording
+      ended mid-level (scanner stopped / aborted run). SMB3 has no in-level warp
+      pipes, so there is no incomplete/warp outcome.
+    - unknown: Could not determine outcome (missing variables / parse error only)
     """
     try:
         # Check if level was cleared: any goal_cards_p1 variable increases
@@ -120,8 +124,17 @@ def _determine_outcome(repetition_variables):
         if last_segment and all(v == 0 for v in last_segment):
             return "failed/fall"
 
+        # No clear, no timeout, no fall: distinguish an enemy-kill death from an
+        # interrupted recording. Only treat it as interrupted when the death flag
+        # 'killed' NEVER fires (max == 0): the player never entered a killed state,
+        # so the recording was cut mid-life (scanner stopped / aborted run). If a
+        # killed event did occur it stays failed/killed (the ambiguous default).
+        # (SMB3 has no in-level warp pipes -> there is no incomplete/warp outcome.)
+        killed = repetition_variables.get("killed", [])
+        if isinstance(killed, list) and len(killed) > 0 and max(killed) == 0:
+            return "incomplete/interrupted"
         return "failed/killed"
-        
+
     except (KeyError, IndexError):
         return "unknown"
 

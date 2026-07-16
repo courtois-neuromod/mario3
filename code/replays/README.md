@@ -42,7 +42,7 @@ All variables rely on RAM addresses defined in `stimuli/SuperMarioBros3-Nes/data
 | Variable | Source / Logic |
 | :--- | :--- |
 | **Duration** | Total replay duration in seconds. |
-| **Outcome** | `cleared` (complete_level=1 AND killed=0), `failed/timeout` (timer=0), `failed/fall` (X pos static in last 100 frames), `failed/killed` (other deaths). |
+| **Outcome** | `cleared` (complete_level=1 AND killed=0), `failed/timeout` (timer=0), `failed/fall` (X pos static in last 100 frames), `failed/killed` (a death occurred, `killed` fired), `incomplete/interrupted` (no clear/timeout/fall and `killed` never fired = recording cut mid-life; SMB3 has no in-level warp so no `incomplete/warp`). |
 | **X_traveled** | Max distance reached from start (`max(page * 256 + x) - start`). |
 | **Enemies_stomped** | Count of `stomp_counter` transitions from 0 to 1. |
 | **Hits_taken** | Count of ANY decrement in `powerup` value + 1 if outcome is `failed/killed`. |
