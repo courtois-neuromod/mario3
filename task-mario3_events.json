@@ -42,7 +42,7 @@
       "Timer_warning_started": "The game begins warning the player that little time remains.",
       "P-Switch_started": "The player activates a P-Switch, temporarily changing nearby bricks and coins. Formerly: 'P-Switch_activated'.",
       "P-Switch_expired": "The temporary P-Switch effect ends.",
-      "Goal_card_visible/*": "The mushroom, flower or star goal card becomes visible at the end of the level. The * stands for card_type.",
+      "Goal_card_visible": "The end-of-level roulette card comes on screen. Its face cycles mushroom / flower / star until it is touched, so it is untyped here; the type taken is in Goal_card_collected. Formerly: 'Goal_card_visible/{card_type}'.",
       "Goal_card_collected/*": "The player touches and collects the end-of-level goal card. The * stands for card_type.",
       "Auto_scroll_started": "The level begins scrolling independently of the player.",
       "Level_started": "A new level or gameplay attempt begins.",
