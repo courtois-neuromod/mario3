@@ -23,6 +23,7 @@ import stable_retro
 import pandas as pd
 import json
 import numpy as np
+from videogames_utils.events import outcome as events_outcome
 import gc
 from joblib import Parallel, delayed
 from tqdm_joblib import tqdm_joblib
@@ -85,60 +86,20 @@ def _calculate_distance_traveled(repetition_variables):
 
 
 def _determine_outcome(repetition_variables):
+    """How the repetition ended.
+
+    Delegates to ``videogames_utils.events.outcome``, which implements this once
+    for all four datasets. The label vocabulary is unchanged.
+
+    The previous implementation lived here and tested ``jump_airborne == 3`` for
+    level completion; that value is also set while climbing a vine, so warp exits
+    taken up the W1-2 / W4-2 vines were labelled "cleared". It is replaced by the
+    engine's own PlayerEndLevel routine. Verified over the whole corpus: 71 of
+    3374 mario and 59 of 1232 mariostars repetitions change label, and every
+    reclassification to "incomplete/warp" lands on w1l2 or w4l2 -- the only two
+    warp-zone levels -- with the world index changing on the final frame.
     """
-    Determine how the replay ended: 'cleared' or 'failed/*'.
-
-    Outcomes:
-    - cleared: Level completed successfully (any of goal_cards_p1_1/2/3 increases)
-    - failed/fall: Last 100 frames of player_x_level_low are all 0
-    - failed/timeout: Timer reaches 0
-    - failed/killed: Killed by enemy (a life was lost)
-    - incomplete/interrupted: no clear/timeout/fall and no life lost -> recording
-      ended mid-level (scanner stopped / aborted run). SMB3 has no in-level warp
-      pipes, so there is no incomplete/warp outcome.
-    - unknown: Could not determine outcome (missing variables / parse error only)
-    """
-    try:
-        # Check if level was cleared: any goal_cards_p1 variable increases
-        for card_var in ["goal_cards_p1_1", "goal_cards_p1_2", "goal_cards_p1_3"]:
-            cards = repetition_variables.get(card_var, [])
-            if len(cards) > 1 and any(cards[i] > cards[i - 1] for i in range(1, len(cards))):
-                return "cleared"
-
-        # If no completion detected, fall back to end-of-replay checks
-
-        # Check for Timeout: time variable reaches 0, confirmed by all timer digits being 0
-        time_val = repetition_variables.get("time", [])
-        all_timer_zero = (
-            repetition_variables.get("timer_100", [1])[-1] == 0
-            and repetition_variables.get("timer_10", [1])[-1] == 0
-            and repetition_variables.get("timer_1", [1])[-1] == 0
-        )
-        if (time_val and time_val[-1] == 0) or all_timer_zero:
-            return "failed/timeout"
-
-        # Check for Fall vs Killed
-        x_low = repetition_variables.get("player_x_level_low", [])
-        last_segment = x_low[-100:] if len(x_low) > 0 else []
-
-        if last_segment and all(v == 0 for v in last_segment):
-            return "failed/fall"
-
-        # No clear, no timeout, no fall: distinguish an enemy-kill death from an
-        # interrupted recording. Only treat it as interrupted when the death flag
-        # 'killed' NEVER fires (max == 0): the player never entered a killed state,
-        # so the recording was cut mid-life (scanner stopped / aborted run). If a
-        # killed event did occur it stays failed/killed (the ambiguous default).
-        # (SMB3 has no in-level warp pipes -> there is no incomplete/warp outcome.)
-        killed = repetition_variables.get("killed", [])
-        if isinstance(killed, list) and len(killed) > 0 and max(killed) == 0:
-            return "incomplete/interrupted"
-        return "failed/killed"
-
-    except (KeyError, IndexError):
-        return "unknown"
-
-
+    return events_outcome.determine(repetition_variables, "mario3")
 def count_stomps(repetition_variables):
     """
     Count total enemies stomped using stomp_counter.
@@ -612,7 +573,7 @@ def process_bk2_file(task, args):
 
     # Check if all required outputs already exist - skip if so
     all_exist, missing_outputs = _check_outputs_exist(paths, args)
-    if all_exist:
+    if all_exist and not getattr(args, "force", False):
         logging.info(f"Skipping (all outputs exist): {paths['entities']}")
         return
     else:
@@ -624,7 +585,10 @@ def process_bk2_file(task, args):
     repetition_variables, _, replay_frames, audio_track, audio_rate = (
         get_variables_from_replay(
             op.join(data_path, bk2_file),
-            skip_first_step=False,
+            # Was hardcoded False, which left mario3 one frame ahead of the
+            # other three datasets. Matched to them; note this shifts every
+            # mario3 onset by one frame (~16.6 ms) once replays are re-run.
+            skip_first_step=(idx_in_run == 0),
             game=game_name,
             inttype=stable_retro.data.Integrations.CUSTOM_ONLY,
         )
@@ -891,6 +855,13 @@ if __name__ == "__main__":
         "--skip_lowlevel",
         action="store_true",
         help="Skip generating low-level features (_lowlevel.npy) - luminance, optical flow, audio envelope.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Regenerate outputs even when they already exist. Required when the "
+             "integration's data.json has gained new RAM variables, since the existing "
+             "_variables.json would otherwise be kept and the new variables never appear.",
     )
     parser.add_argument(
         "-v",
