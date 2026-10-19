@@ -1,55 +1,83 @@
-# Mario 3 Replay Processing
+# mario3 replay processing
 
-Processes `.bk2` replay files to generate video, metadata, game variables, and low-level features.
+Replays every `.bk2` of the dataset in the emulator and writes, next to it in
+`sub-*/ses-*/gamelogs/`, its frame-by-frame game variables, a video, low-level features
+and a summary. The pipeline is `videogames_utils.replays`, shared by the CNeuroMod
+videogame datasets; what is specific to Super Mario Bros. 3 (NES) lives in `code/game_specific/`.
 
-## Prerequisites & Installation
+## Installation
 
-1.  **Environment**: Python 3.8+, Mario 3 dataset (with `.bk2` replays), and ROMs in `stimuli/`.
-2.  **Setup**:
-    ```bash
-    python -m venv env
-    source env/bin/activate
-    git submodule update --init code/videogames_utils
-    pip install -r code/replays/requirements.txt
-    ```
+```bash
+python -m venv env
+source env/bin/activate
+git submodule update --init code/videogames_utils
+pip install -r code/replays/requirements.txt
+```
+
+The ROM and the integration (`data.json`, states, scenarios) are in
+`stimuli/SuperMarioBros3-Nes/`.
 
 ## Usage
 
 ```bash
-python code/replays/generate_replays.py
+python code/replays/generate_replays.py -nj -1
+python code/replays/generate_replays.py -sub sub-01 -ses ses-001 --skip_videos
 ```
 
-### Arguments (Brief)
--   `--datapath`: Root directory of the dataset.
--   `--output`: Output directory.
--   `--skip_videos`, `--skip_variables`, `--skip_lowlevel`: Skip specific outputs.
--   `--n_jobs`: Number of parallel jobs (default: all cores).
--   `--subjects`, `--sessions`: Filter processing.
--   `--stimuli`: Custom path for ROMs.
--   `--verbose`: Enable detailed logging.
+- `-d`, `--datapath`: dataset root (default: the current directory).
+- `-o`, `--output`: where to write the outputs (default: the dataset root).
+- `-s`, `--stimuli`: where the integration is (default: `<datapath>/stimuli`).
+- `-nj`, `--n_jobs`: parallel jobs, `-1` for all cores (default: 1).
+- `--subjects`, `--sessions`: process only these, e.g. `-sub sub-01 -ses ses-001`.
+- `--skip_videos`, `--skip_variables`, `--skip_lowlevel`: skip an output.
+- `--force`: regenerate outputs that already exist (needed when `data.json` has gained
+  variables).
+- `-v`, `--verbose`: detailed logging.
 
-## Generated Files
+At the end, every replay whose `done` flag is not set on its last frame only is listed:
+it ends on the scenario's done condition otherwise, so this points at a problem with the
+recording.
 
-For each replay (e.g., `sub-{subject}_ses-{session}_task-mario3_run-{run}_rep-{replay}.bk2`):
-1.  `*_recording.mp4`: Video recording.
-2.  `*_variables.json`: Frame-by-frame RAM variables (if extracted).
-3.  `*_lowlevel.npy`: Luminance, optical flow, and audio features.
-4.  `*_summary.json`: Summary metadata (BIDS sidecar).
+## Generated files
 
-## Summary Variables (in sidecar JSON)
+For each `sub-*_ses-*_task-mario3_*.bk2`:
 
-All variables rely on RAM addresses defined in `stimuli/SuperMarioBros3-Nes/data.json`.
+- `*_variables.json`: the game variables of `data.json`, one value per frame, and the
+  buttons pressed.
+- `*_recording.mp4`: the replay with its audio, at the emulator's frame rate.
+- `*_lowlevel.npy`: luminance, optical flow and audio envelope, per frame.
+- `*_summary.json`: one record per repetition, below.
 
-| Variable | Source / Logic |
-| :--- | :--- |
-| **Duration** | Total replay duration in seconds. |
-| **Outcome** | `cleared` (complete_level=1 AND killed=0), `failed/timeout` (timer=0), `failed/fall` (X pos static in last 100 frames), `failed/killed` (a death occurred, `killed` fired), `incomplete/interrupted` (no clear/timeout/fall and `killed` never fired = recording cut mid-life; SMB3 has no in-level warp so no `incomplete/warp`). |
-| **X_traveled** | Max distance reached from start (`max(page * 256 + x) - start`). |
-| **Enemies_stomped** | Count of `stomp_counter` transitions from 0 to 1. |
-| **Hits_taken** | Count of ANY decrement in `powerup` value + 1 if outcome is `failed/killed`. |
-| **Bricks_smashed** | Count of `score` increments of exactly 1. |
-| **Coins** | Difference between start and end coin count (requires `coins` variable). |
-| **Powerups_collected** | Count of ANY increment in `powerup` value. |
-| **Stars_collected** | Count of starman activations (duration > 0). |
-| **Flights_activated** | Count of flight timer activations (duration > 0). |
-| **Phase** | `discovery` (level repeats) or `practice` (sequential progression) - determined *per subject*. |
+## Summary fields
+
+Common to the CNeuroMod videogame datasets:
+
+| Field | Meaning |
+|---|---|
+| `Subject`, `Session`, `Run` | BIDS labels, e.g. `sub-01`, `ses-002`, `run-01`. |
+| `Level` | The `level-` entity of the `.bk2`. |
+| `Bk2File` | The `.bk2`, relative to the dataset root. |
+| `IndexInRun` | Position among the run's repetitions that have a `.bk2`, from 0. |
+| `IndexGlobal`, `IndexLevel` | Position among the subject's repetitions, overall and at this level, in the order they were played, from 0. |
+| `Phase` | The protocol phase: `discovery` until the subject goes back to a level played earlier (other than an immediate retry), `practice` afterwards. |
+| `Outcome` | How the repetition ended: `cleared`, `failed/killed`, `failed/fall`, `failed/timeout`, `incomplete/warp`, `incomplete/interrupted`. |
+| `Duration`, `FrameCount` | Length of the replay, in seconds and in frames. |
+
+Specific to Super Mario Bros. 3 (NES):
+
+| Field | Meaning |
+|---|---|
+| `ScoreGained` | `score` at the last frame minus the first, times 10 (the game stores tens of points). |
+| `HitsTaken` | `PlayerDamaged` + `PlayerDied/Enemy` events: hits that cost a power-up or a life. Falls and timeouts are not hits. |
+| `EnemiesStomped` | Times `stomp_counter` goes from 0 to 1. |
+| `CoinsCollected` | `coins_p1` at the last frame minus the first. |
+| `PowerupsCollected` | Increases of `powerup`. |
+| `StarsCollected` | Times `invincibility_timer` goes from 0 to non-zero. |
+| `BricksSmashed` | `BlockSmashed` events: a brick broken from below while airborne. |
+| `DistanceTraveled` | Furthest position in the level reached, in pixels. |
+| `AverageSpeed` | `DistanceTraveled` / `Duration`, in pixels per second. |
+| `FinalTimer` | The level timer at the last frame. |
+| `FinalForm` | The player's suit at the last frame (`powerup`). |
+| `FlightsActivated` | Times `flight_timer` goes from 0 to non-zero. |
+| `KuriboShoeUses` | Times Kuribo's Shoe was acquired. |
+| `MaxPMeter` | Highest value of the P-meter. |
