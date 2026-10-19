@@ -175,7 +175,7 @@ def _rep_index(stim_file: Optional[str]) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
-def generate(repvars: dict, level=None, outcome: Optional[str] = None,
+def generate(repvars: dict, outcome: Optional[str] = None,
              stim_file: Optional[str] = None, **defaults):
     """Build the events DataFrame for one SMB3 repetition.
 
@@ -189,8 +189,7 @@ def generate(repvars: dict, level=None, outcome: Optional[str] = None,
     rep_index = _rep_index(stim_file)
     fs = FRAME_RATE
     d = _Vars(repvars)
-    acc = EventAccumulator(level if level is not None else repvars.get("level"), fs,
-                           **defaults)
+    acc = EventAccumulator(fs, **defaults)
 
     _actions(acc, repvars)
     completed = _level_events(acc, d, rep_index)
