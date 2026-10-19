@@ -19,6 +19,8 @@ GAME = Game(
     type_descriptions=TYPE_DESCRIPTIONS,
     generate=generator.generate,
     outcome=outcome.outcome,
+    summary=replays.summary,
+    phases=replays.phases,
     form_states=frozenset({"PlayerState/Small", "PlayerState/Super", "PlayerState/Fire",
                            "PlayerState/Raccoon", "PlayerState/Frog",
                            "PlayerState/Tanooki", "PlayerState/Hammer"}),
