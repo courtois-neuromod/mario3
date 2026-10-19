@@ -175,7 +175,7 @@ def _rep_index(stim_file: Optional[str]) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
-def generate(repvars: dict, level=None, outcome: Optional[str] = None,
+def generate(repvars: dict, outcome: Optional[str] = None,
              stim_file: Optional[str] = None, **defaults):
     """Build the events DataFrame for one SMB3 repetition.
 
@@ -189,8 +189,7 @@ def generate(repvars: dict, level=None, outcome: Optional[str] = None,
     rep_index = _rep_index(stim_file)
     fs = FRAME_RATE
     d = _Vars(repvars)
-    acc = EventAccumulator(level if level is not None else repvars.get("level"), fs,
-                           **defaults)
+    acc = EventAccumulator(fs, **defaults)
 
     _actions(acc, repvars)
     completed = _level_events(acc, d, rep_index)
@@ -276,11 +275,54 @@ def _object_events(acc: EventAccumulator, d: _Vars) -> None:
         acc.add("GoalCardVisible", track.frame_start)
         break   # the card is one object; a second visible track is a re-scroll
 
-    for track in tracking.find_tracks(
-            d.n, N_SLOTS, d.visible, lambda s, f: d.ids[s][f], min_frames=2,
-            keep=lambda oid: oid in ITEM_OBJECT_IDS):
+    items = tracking.find_tracks(
+        d.n, N_SLOTS, d.visible, lambda s, f: d.ids[s][f], min_frames=2,
+        keep=lambda oid: oid in ITEM_OBJECT_IDS)
+    for track in items:
         acc.add(f"ItemOnScreen/{ITEM_OBJECT_IDS[track.type_id]}",
                 track.frame_start, track.frame_stop)
+    _pickup_events(acc, d, items)
+
+
+#: Player_Suit value each item gives. A 1-up is LifeGained instead; a star starts the
+#: star timer.
+ITEM_SUITS = {"Mushroom": 1, "FireFlower": 2, "SuperLeaf": 3}
+#: Score (in units of 10 points) awarded for an item that changes nothing.
+UNCHANGED_PICKUP_SCORE = 100
+
+
+def _suit_rank(value: int) -> int:
+    """0 for Small, 1 for Super, 2 for any power suit."""
+    return min(value, 2)
+
+
+def _pickup_events(acc: EventAccumulator, d: _Vars, items) -> None:
+    """ItemCollected/Powerup: one row on the frame a mushroom, flower, leaf or star is collected.
+
+    Collecting an item erases it. A pickup is the frame after an item's last visible
+    frame when, on that frame or the next, the suit goes up or changes to another power
+    suit, or the star timer starts. An item that changes nothing (a leaf taken as Raccoon
+    Mario, a flower as Fire Mario, a mushroom when already big) awards 1000 points about
+    eight frames later instead.
+    """
+    suit, star, score = d.col("powerup"), d.col("invincibility_timer"), d.col("score")
+    for track in items:
+        name = ITEM_OBJECT_IDS[track.type_id]
+        gone = track.frame_stop + 1
+        if name == "1Up" or gone >= d.n:
+            continue
+        collected = any(
+            _suit_rank(suit[f]) > _suit_rank(suit[f - 1])
+            or (_suit_rank(suit[f]) == _suit_rank(suit[f - 1]) == 2 and suit[f] != suit[f - 1])
+            or (star[f] and not star[f - 1])
+            for f in range(gone, min(d.n, gone + 2)))
+        if not collected and name in ITEM_SUITS:
+            wearing = suit[track.frame_stop]
+            if wearing == ITEM_SUITS[name] or (name == "Mushroom" and _suit_rank(wearing) >= 1):
+                collected = any(score[f] - score[f - 1] == UNCHANGED_PICKUP_SCORE
+                                for f in range(gone + 5, min(d.n, gone + 10)))
+        if collected:
+            acc.add("ItemCollected/Powerup", gone)
 
 
 def _defeat_frames(d: _Vars) -> List[tuple]:
