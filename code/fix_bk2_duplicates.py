@@ -12,7 +12,8 @@ A bug in the BizHawk recording pipeline caused some `.bk2` replay files to be
 saved with duplicate content: when a level was played several times in a
 session, the later replays were overwritten with the data of the *first* play.
 
-Two replays are considered duplicates if:
+Two replays are considered duplicates if they were recorded in the same
+session (the bug never crossed sessions) and:
   - their action sequences are identical, OR
   - one sequence equals the other with its first frame removed
     (i.e. they are the same replay but one has one extra leading frame)
@@ -52,8 +53,13 @@ are git-annex symlinks; the *original* recordings use the SHA256E annex backend
 while the duplicate copies created by the bug use MD5E. Removal therefore only
 deletes a higher rep when it is an MD5E symlink AND the kept rep is a present
 SHA256E original — so genuine data is never deleted. Groups that don't fit this
-pattern (e.g. group 161, whose reps span two sessions with differing content and
-where the kept rep is itself MD5E) are FLAGGED and left untouched. Removal uses
+pattern are FLAGGED and left untouched.
+
+Cross-session matches are not duplicates: short, stereotyped plays (e.g. hold
+Right until death) replay identically on the deterministic emulator, so two
+genuine plays from different sessions can differ by one leading frame (sub-05
+ses-003 and ses-009 w3l9, verified against both PsychoPy logs). Detection, and
+groups loaded with --duplicates, are therefore limited to one session. Removal uses
 `git rm` (stages deletions); commit afterwards with `datalad save`.
 
 Usage
@@ -162,8 +168,9 @@ def detect_duplicates(dataset):
             fh = seq_hash(frames)
             bh = seq_hash(frames[1:]) if len(frames) > 1 else fh
             n_frames_map[bk2] = len(frames)
-            full_map[fh].append(bk2)
-            body_map[bh].append(bk2)
+            session = bk2.relative_to(dataset).parts[:2]  # (sub-XX, ses-YYY)
+            full_map[(session, fh)].append(bk2)
+            body_map[(session, bh)].append(bk2)
         except Exception as e:
             errors.append((bk2, str(e)))
 
@@ -230,10 +237,15 @@ def groups_from_csv(csv_path):
                 n_frames = int(row.get('n_frames', '') or 0)
             except ValueError:
                 n_frames = 0
-            groups[row['group_id']].append((int(m.group(1)), path, n_frames))
-    for members in groups.values():
+            session = Path(path).parts[:2]  # (sub-XX, ses-YYY)
+            groups[(row['group_id'], session)].append((int(m.group(1)), path, n_frames))
+    result = {}
+    for (gid, session), members in groups.items():
+        if len(members) < 2:  # a cross-session match leaves no duplicate
+            continue
         members.sort(key=lambda t: t[0])
-    return dict(groups)
+        result[gid if gid not in result else f"{gid}-{session[1]}"] = members
+    return result
 
 
 def groups_to_csv(groups, output_path):
