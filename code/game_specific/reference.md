@@ -20,7 +20,7 @@ removes 21% of the frames the horizontal test alone would have called visible.
 | `Screen/Death` | The death sequence, no control. | `player_is_dying` ≠ 0, ~200 frames |
 | `Screen/LevelEnd` | The end-of-level sequence, no control. | from the goal card to the end of the recording: card animation and COURSE CLEAR, ~340 frames |
 | `Screen/Transition` | Between areas, no control. | `player_halt_game` ≥ 128 while the next area loads, plus the pipe-entry hold before it |
-| `Screen/GameOver` | The GAME OVER screen. | `level_music` = 0 with `lives` < 0 after the death: the map with the GAME OVER dialog. **148 of 4063 recordings** ran on into this instead of stopping at the death, for a median 18 s and up to 4 min. |
+| `Screen/GameOver` | The GAME OVER screen. | `level_music` = 0 with `lives` < 0 after the death: the map with the GAME OVER dialog. Some recordings run on into this instead of stopping at the death. |
 | `Screen/Map` | The SMB3 world map. | `level_music` = 0 with `lives` ≥ 0 after the death: one recording (sub-06 ses-010 w6l4 rep-000) returned to the map and recorded a second attempt at the level |
 
 ### Timing a fall death
@@ -42,12 +42,10 @@ removes 21% of the frames the horizontal test alone would have called visible.
 | `PlayerState/Star` | Star invincibility. | `invincibility_timer` (`Player_StarInv`) non-zero run, ~448 frames. |
 | `PlayerState/HitRecovery` | Post-hit invulnerability while blinking, ~113 frames. | `invisibility_timer` (`Player_FlashInv`) non-zero run. |
 | `PlayerState/Flying` | Flying with a flight-capable suit. | `flight_timer` (`Player_FlyTime`) non-zero run. |
-| `PlayerState/Statue`, `PlayerState/KuriboShoe` | Tanooki statue form; riding Kuribo's Shoe. | `statue_timer` / `kuribo_shoe` non-zero run. Both are rare (1 and 5 repetitions in the corpus). |
+| `PlayerState/Statue`, `PlayerState/KuriboShoe` | Tanooki statue form; riding Kuribo's Shoe. | `statue_timer` / `kuribo_shoe` non-zero run. Both are rare. |
 | `PSwitchStarted`, `PSwitchExpired` | A P-Switch is active. | `p_switch_timer` (`Level_PSwitchCnt`) non-zero run. |
 
-> `player_is_dying` states the cause of death outright. It replaces the previous
-> timer-freeze plus X-position heuristic, and moved 942 repetitions from the catch-all
-> `failed/killed` to `failed/fall`.
+> `player_is_dying` states the cause of death outright.
 
 ### Objects
 
@@ -73,7 +71,7 @@ rather than hand-written, so it stays correct if the table is regenerated.
 |---|---|---|
 | `LevelStarted` | First attempt at this level in the run. | Frame 0 of a `rep-000` file. |
 | `LevelRestarted` | A retry after dying. | Frame 0 of a `rep-001`+ file. In SMB3 one level attempt spans up to three one-life `.bk2` files. |
-| `GoalCardVisible` | The end-of-level roulette card is on screen, 0.5-4 s before it is taken. Untyped: its face cycles until touched. | A visible track of object id **`0x41`** (`OBJ_ENDLEVELCARD`). An earlier release keyed on the card items `0x21`-`0x23` (`PowerUpMushCard` etc.), which never appear at a level end, so the event never fired. |
+| `GoalCardVisible` | The end-of-level roulette card is on screen, 0.5-4 s before it is taken. Untyped: its face cycles until touched. | A visible track of object id **`0x41`** (`OBJ_ENDLEVELCARD`). |
 | `LevelCompleted` | Finished the level. | A goal card enters the inventory (`goal_cards_p1_{1,2,3}` increases). |
 | `GoalCardCollected/{Mushroom,Flower,Star,…}` | Which card was collected. | The same transition; the card value names it. |
 | `AutoScrollStarted` | The level began scrolling on its own. | `level_hautoscroll` (`Level_HAutoScroll`) becomes non-zero. |

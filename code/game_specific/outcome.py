@@ -7,9 +7,7 @@ The labels, shared by the CNeuroMod videogame datasets:
     incomplete/warp, incomplete/interrupted
     unknown
 
-**mario3.** The shipped logic inferred death from a timer freeze plus the player's X
-position, and fell through to ``failed/killed`` as a catch-all -- which is why 91% of
-mario3 repetitions carry that label. ``Player_IsDying`` ($00F1) states the cause outright.
+**mario3.** ``Player_IsDying`` ($00F1) states the cause of death outright.
 
 """
 
