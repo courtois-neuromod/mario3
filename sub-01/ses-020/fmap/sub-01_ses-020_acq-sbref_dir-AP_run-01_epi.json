@@ -33,8 +33,7 @@
   "InstitutionName": "IUGM",
   "InstitutionalDepartmentName": "Department",
   "IntendedFor": [
-    "ses-020/func/sub-01_ses-020_task-mario3_run-01_part-mag_bold.nii.gz",
-    "ses-020/func/sub-01_ses-020_task-mario3_run-02_part-mag_bold.nii.gz"
+    "ses-020/func/sub-01_ses-020_task-mario3_run-01_part-mag_bold.nii.gz"
 ],
   "MRAcquisitionType": "2D",
   "MagneticFieldStrength": 3,
